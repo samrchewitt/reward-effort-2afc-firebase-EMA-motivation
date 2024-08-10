@@ -12,8 +12,9 @@ behavioural analysis
 rm(list=ls()) #clear workspace 
 #dev.off(dev.list()["RStudioGD"]) #clear workspace and remove plots
 options(scipen=999)
+#
 
-# load packages
+# load packages, or install if not 
 packages <- c("rjson","dplyr", "tidyverse", "tidyr", "reshape2",
               "ggpmisc", "patchwork", "plotly", "devtools", "nlme", "kableExtra", "robustlmm", "ggsignif")
 if (length(setdiff(packages, rownames(installed.packages()))) > 0 ) {
@@ -22,10 +23,11 @@ if (length(setdiff(packages, rownames(installed.packages()))) > 0 ) {
 lapply(packages, require, character.only=TRUE)
 
 # set-up where to look for code, data, and what task version to get #
-repo_path = paste0('C:/Users/', Sys.getenv("USERNAME"),'/Documents/GitHub/reward-effort-2afc-firebase-BEX-FU/')
+repo_path = paste0('C:/Users/', Sys.getenv("USERNAME"),'/Documents/GitHub/reward-effort-2afc-firebase-EMA-motivation/')
 # where firebase raw output files have been downloaded to
 source(paste0(repo_path, 'analysis/functions/rew_eff_functions.R'))
 source(paste0(repo_path, 'analysis/functions/util_functions.R'))
+
 
 # load rainCloudPlot src code
 source_url("https://raw.githubusercontent.com/RainCloudPlots/RainCloudPlots/master/tutorial_R/R_rainclouds.R")
@@ -2432,8 +2434,7 @@ wk_summary = week_means %>% group_by(user_id, week_split) %>%
   summarise(mean_BA = mean(zBA_m, na.rm=T),
             mean_SM = mean(zSM_m, na.rm=T), 
             se_BA = sd(zBA_m, na.rm=T)/sqrt(n()),
-            se_SM = sd(zSM_m, na.rm=T)/sqrt(n()),
-            mean_choice = mean(choice_m, na.rm=T))
+            se_SM = sd(zSM_m, na.rm=T)/sqrt(n()))
 
 
 wk1 = filter(wk_summary, week_split=="Mon-Wed") %>% arrange(user_id); 

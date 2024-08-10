@@ -28,7 +28,7 @@ if (length(setdiff(packages, rownames(installed.packages()))) > 0 ) {
 lapply(packages, require, character.only=TRUE)
 
 # load project functions
-repo_path = paste0('C:/Users/', Sys.getenv("USERNAME"),'/Documents/GitHub/reward-effort-2afc-firebase-BEX-FU/')
+repo_path = paste0('C:/Users/', Sys.getenv("USERNAME"),'/Documents/GitHub/reward-effort-2afc-firebase-EMA-motivation/')
 source(paste0(repo_path, 'analysis/functions/rew_eff_functions.R'))
 source(paste0(repo_path, 'analysis/functions/util_functions.R'))
 # options
@@ -36,7 +36,9 @@ options(dplyr.summarise.inform = FALSE)
 options(scipen=999)
 
 ## set-up directories
-data_dir <- "C:/Users/SAM/Documents/data/" # data path stem
+# update below to your local dir 
+data_dir <- "C:/Users/SAM/Documents/data/" # data path stem 
+
 model_dir = paste0(repo_path, "analysis/stan_fits/") # save / load stan fits
 fig_dir = paste0(repo_path, "analysis/figs/") # figures 
 table_dir = paste0(repo_path, "analysis/tables/") # tables 
