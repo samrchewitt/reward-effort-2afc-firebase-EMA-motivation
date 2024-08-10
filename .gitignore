@@ -1,0 +1,10 @@
+
+*.Rproj.user
+*.asv
+git rm --cached *.asv 
+*.csv
+git rm --cached *.csv 
+*.exe
+git rm --cached *.exe
+*.bak*
+git rm --cached *.bak*

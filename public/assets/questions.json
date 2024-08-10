@@ -1,0 +1,268 @@
+{
+  "questions": [
+    {
+      "text": "[b]Right now[/b]\n\nI feel happy\n\n",
+      "responses": [
+        {
+          "text": "totally\nUNTRUE",
+          "value": 0
+        },
+        {
+          "text": "mostly\nUNTRUE",
+          "value": 1
+        },
+        {
+          "text": "slightly\nUNTRUE",
+          "value": 2
+        },
+        {
+          "text": "neither\ntrue or\nuntrue",
+          "value": 3
+        },
+        {
+          "text": "slightly\nTRUE",
+          "value": 4
+        },
+        {
+          "text": "mostly\nTRUE",
+          "value": 5
+        },
+        {
+          "text": "totally\nTRUE",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "text": "[b]Right now[/b]\n\nI am starting\nconversations with\npeople (online or\nin person)\n\n",
+      "responses": [
+        {
+          "text": "totally\nUNTRUE",
+          "value": 0
+        },
+        {
+          "text": "mostly\nUNTRUE",
+          "value": 1
+        },
+        {
+          "text": "slightly\nUNTRUE",
+          "value": 2
+        },
+        {
+          "text": "neither\ntrue or\nuntrue",
+          "value": 3
+        },
+        {
+          "text": "slightly\nTRUE",
+          "value": 4
+        },
+        {
+          "text": "mostly\nTRUE",
+          "value": 5
+        },
+        {
+          "text": "totally\nTRUE",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "text": "[b]Right now[/b]\n\nI feel like\nmaking an effort\nis difficult\n\n\n",
+      "responses": [
+        {
+          "text": "totally\nUNTRUE",
+          "value": 0
+        },
+        {
+          "text": "mostly\nUNTRUE",
+          "value": 1
+        },
+        {
+          "text": "slightly\nUNTRUE",
+          "value": 2
+        },
+        {
+          "text": "neither\ntrue or\nuntrue",
+          "value": 3
+        },
+        {
+          "text": "slightly\nTRUE",
+          "value": 4
+        },
+        {
+          "text": "mostly\nTRUE",
+          "value": 5
+        },
+        {
+          "text": "totally\nTRUE",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "text": "[b]Right now[/b]\n\nI feel motivated\nto finish things\nI have decided to do\n\n",
+      "responses": [
+        {
+          "text": "totally\nUNTRUE",
+          "value": 0
+        },
+        {
+          "text": "mostly\nUNTRUE",
+          "value": 1
+        },
+        {
+          "text": "slightly\nUNTRUE",
+          "value": 2
+        },
+        {
+          "text": "neither\ntrue or\nuntrue",
+          "value": 3
+        },
+        {
+          "text": "slightly\nTRUE",
+          "value": 4
+        },
+        {
+          "text": "mostly\nTRUE",
+          "value": 5
+        },
+        {
+          "text": "totally\nTRUE",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "text": "[b]Right now[/b]\n\nI am thinking\nof plans to do\nwith friends\n\n",
+      "responses": [
+        {
+          "text": "totally\nUNTRUE",
+          "value": 0
+        },
+        {
+          "text": "mostly\nUNTRUE",
+          "value": 1
+        },
+        {
+          "text": "slightly\nUNTRUE",
+          "value": 2
+        },
+        {
+          "text": "neither\ntrue or\nuntrue",
+          "value": 3
+        },
+        {
+          "text": "slightly\nTRUE",
+          "value": 4
+        },
+        {
+          "text": "mostly\nTRUE",
+          "value": 5
+        },
+        {
+          "text": "totally\nTRUE",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "text": "[b]Right now[/b]\n\nI feel tired\n\n",
+      "responses": [
+        {
+          "text": "totally\nUNTRUE",
+          "value": 0
+        },
+        {
+          "text": "mostly\nUNTRUE",
+          "value": 1
+        },
+        {
+          "text": "slightly\nUNTRUE",
+          "value": 2
+        },
+        {
+          "text": "neither\ntrue or\nuntrue",
+          "value": 3
+        },
+        {
+          "text": "slightly\nTRUE",
+          "value": 4
+        },
+        {
+          "text": "mostly\nTRUE",
+          "value": 5
+        },
+        {
+          "text": "totally\nTRUE",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "text": "[b]Last night[/b]\n\nI slept well\n\n",
+      "responses": [
+        {
+          "text": "totally\nUNTRUE",
+          "value": 0
+        },
+        {
+          "text": "mostly\nUNTRUE",
+          "value": 1
+        },
+        {
+          "text": "slightly\nUNTRUE",
+          "value": 2
+        },
+        {
+          "text": "neither\ntrue or\nuntrue",
+          "value": 3
+        },
+        {
+          "text": "slightly\nTRUE",
+          "value": 4
+        },
+        {
+          "text": "mostly\nTRUE",
+          "value": 5
+        },
+        {
+          "text": "totally\nTRUE",
+          "value": 6
+        }
+      ]
+    },
+    {
+      "text": "[b]On sunny days[/b]\n\nthe sky\nis blue\n\n",
+      "responses": [
+        {
+          "text": "totally\nUNTRUE",
+          "value": 0
+        },
+        {
+          "text": "mostly\nUNTRUE",
+          "value": 1
+        },
+        {
+          "text": "slightly\nUNTRUE",
+          "value": 2
+        },
+        {
+          "text": "neither\ntrue or\nuntrue",
+          "value": 3
+        },
+        {
+          "text": "slightly\nTRUE",
+          "value": 4
+        },
+        {
+          "text": "mostly\nTRUE",
+          "value": 5
+        },
+        {
+          "text": "totally\nTRUE",
+          "value": 6
+        }
+      ]
+    }
+  ]
+}

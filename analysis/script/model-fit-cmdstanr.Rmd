@@ -1,0 +1,1060 @@
+---
+title: "cmdstanr_modelling"
+author: "Sam Hewitt"
+date: "2023-2024"
+output: html_document
+---
+script to fit hierarchical joint models for rew-eff state fluctuations study 
+ divided into blocks since there are multiple models 
+ 1. base model  
+ 2. timeseries model with lag1 (-1 & +1) states 
+ 3. timeseries model with lag2 (-2 & -1) states
+ 
+ use rstudio outline button to navigate more easily
+
+ Sam Hewitt 2023 
+
+# set-up & load data 
+```{r setup, include=FALSE}
+# 0. Set up ----
+rm(list=ls()) #clear workspace 
+#dev.off(dev.list()["RStudioGD"]) #clear workspace and remove plots
+# load packages
+packages <- c("rjson","dplyr", "tidyverse", "tidyr", "reshape2",
+              "ggpmisc", "patchwork", "plotly", "devtools", "cmdstanr")
+if (length(setdiff(packages, rownames(installed.packages()))) > 0 ) {
+  install.packages(setdiff(packages, rownames(installed.packages())))
+}
+lapply(packages, require, character.only=TRUE)
+
+# load project functions
+repo_path = paste0('C:/Users/', Sys.getenv("USERNAME"),'/Documents/GitHub/reward-effort-2afc-firebase-BEX-FU/')
+source(paste0(repo_path, 'analysis/functions/rew_eff_functions.R'))
+source(paste0(repo_path, 'analysis/functions/util_functions.R'))
+# options
+options(dplyr.summarise.inform = FALSE)
+options(scipen=999)
+
+## set-up directories
+data_dir <- "C:/Users/SAM/Documents/data/" # data path stem
+model_dir = paste0(repo_path, "analysis/stan_fits/") # save / load stan fits
+fig_dir = paste0(repo_path, "analysis/figs/") # figures 
+table_dir = paste0(repo_path, "analysis/tables/") # tables 
+task_data_dir <- paste0(data_dir, 'task/') # csv files for task data 
+
+# load anon data 
+long_data = read.csv(file = paste0(task_data_dir, "/long_data_anon.csv"))# first load all long data
+long_data_ex = read.csv(file = paste0(task_data_dir, "/long_data_exclCatch_anon.csv"))#
+quest = read.csv(file = paste0(task_data_dir, "/quest_data.csv"))
+beh_data = read.csv(file=paste0(task_data_dir, "/behavioural_data_CFA_anon.csv"))
+
+
+# calculate summary completion again
+summaryComplete = beh_data %>% group_by(user_id) %>%
+  summarise(tGames = sum(!is.na(DeltaEffortChosen)),
+            tStates = sum(!is.na(Total)),
+            responses = sum(!is.na(delay_mins))) 
+
+```
+
+
+# prepare data for modelling
+
+```{r, prepare_data}
+# subjective state items to include in the model
+vars_to_model=c("Effort", "Motivated", "Conversations", "Plans")
+# set up various parameters for joint modelling (see rewEf_functions.r)
+
+# keep the same subjects only in long trial data 
+long_data = long_data %>% filter(user_id %in% beh_data$user_id)# 
+long_data_ex = filter(long_data_ex, user_id %in% beh_data$user_id)
+
+# specify a list of data which we need to use in our joint model 
+joint_inputs = list(quest_data=filter(beh_data, user_id %in% long_data_ex$user_id), # self-report EMA data
+                    vars_to_model=vars_to_model) # apathy data 
+
+# check the data that will be modelled
+data_list = rewEff_prepare_retest(long_data_ex, # long trial data
+                                  minSess=4, # a min number of sessions cut off to double check we don't include people agaisnt our criteria
+                                  gameTrials=23, # n trials in the game 
+                                  joint=T, joint_inputs=joint_inputs) # joint info
+
+# sampling parameters for model fitting 
+sampling_params=list(nFits=1,chains=4, warmup=2000,iter=2000, adapt_delta=0.95, 
+                     thin=1, # if you want to thin samples
+                     max_treedepth=10, init_r=1.25)
+
+```
+
+
+
+# run model
+```{r, fit}
+# model names 
+model_name = "rewEff-linear-bernoulli-multisess-joint-IRT-1param"
+
+# set stan directory 
+stan_dir = c(paste0(repo_path, 'analysis/stan-models/'))
+
+# compile the model
+model = cmdstan_model(paste0(stan_dir,model_name,".stan"), compile=T)
+# if it's an old model create an updated version, and save a back up
+model$format(canonicalize = TRUE, overwrite_file = TRUE, backup = F)
+
+ # create an output file name
+f_name = paste0(model_dir, model_name, "_test.rds")
+
+# fit the model 
+# fit_retest wrapper contains the prepareData function
+fit=rewEff_fit_retestCMDstan(long_data_ex, 
+                  model=model,# model file stan should fit,
+                  sampling_params=sampling_params,
+                  f_name= f_name, # where to save the rds output
+                  savepath = model_dir,
+                  minSess=4,
+                  gameTrials=23,
+                  joint=T, joint_inputs = joint_inputs # specify joint model 
+                  )
+# note that metropolis warnings can be ignored since these occur sporadically, due to some starting values 
+
+```
+
+
+
+# model diagnostics
+```{r, long_model_diagnostics}
+# if loading from before: 
+#fit = readRDS(file=paste0(model_dir, f_name))
+
+# get simple diagnostic summary
+fit$diagnostic_summary()
+
+library(posterior)
+# get rhat & neff for key parameters
+summary_stats = fit$summary(variables = c("thetaZ", "rewSens", "effSens", "mu_theta",
+                                          "R_rewSens", "R_effSens", "R_theta", 
+                                          "sigma_rewSens", "sigma_effSens", "sigma_theta"))
+
+# show if any rhat > 1.05
+as.data.frame(summary_stats) %>%
+  filter(rhat >1.05) %>%  knitr::kable(caption = paste0("Parameters w/ rhat > 1.05"))
+
+# tell us whether any ess are < 10% 
+as.data.frame(summary_stats) %>%
+  filter(ess_bulk<sampling_params$iter*0.1) %>%  knitr::kable(caption = paste0("Parameters with Neff < 10% samples"))
+
+# min neff
+min(summary_stats$ess_bulk, na.rm=T)/sampling_params$iter
+
+bayesplot::color_scheme_set("blue")
+
+
+```
+
+
+## pairs
+plot group level parameters (mean & sigma) to assess co-linearity 
+
+```{r, plot_pairs_linearJ, fig.height=8, fig.width=8}
+
+# settings
+# extract log posterior density of each draw
+lp <- bayesplot::log_posterior(fit)
+# extract NUTS-specific diagnostic values
+np <- bayesplot::nuts_params(fit)
+
+
+posterior <- fit$draws(variables=c("mu_rewSens", "mu_effSens", "sigma_rewSens", "sigma_effSens")) # or format="array"
+
+
+# get the task indices for states
+#png(paste0(fig_dir, "plotpairs_groupParams.png"),height=30,width=30, units="cm", res=300)
+bayesplot::mcmc_pairs(posterior, 
+                      np = np, 
+                      pars = c("mu_rewSens[1]", "sigma_rewSens[1]", "mu_effSens[1]", "sigma_effSens[1]",
+                               "mu_rewSens[8]", "sigma_rewSens[8]", "sigma_effSens[8]"),
+           off_diag_args = list(size = 0.75),
+           save_gg_objects = F)
+
+
+```
+
+# Analysis
+
+## PPC theta: long IRT
+```{r, PPCtheta_centered}
+# get individual level person centred latent state (thetaZ), correlate with observed state scores
+# individual level parameter distribution means (for computational efficiency: full posterior is slow!)
+summary_draws = as.data.frame(fit$summary(variables = c("thetaZ"), mean, sd)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","subject", "obs"), remove=TRUE, extra="drop") %>%
+  pivot_wider(id_cols=c("subject", "obs"), names_from = c("parameter"), values_from = c("mean", "sd")) %>%
+  mutate(obs=as.numeric(obs),
+         user_id = rep(unique(data_list$user_id), times=max(obs))) %>%
+  # join the posterior means and sds with the observed data summaries
+  inner_join(select(beh_data, all_of(c("user_id", "obs", "sess", "Total", "zTotal",
+                                           "zHappy", "zBA", "zSM", "zTired"))), by=c("user_id", "obs")) 
+
+# make a long format version for ggplot
+SxPosts_long = summary_draws %>%
+  pivot_longer(cols=c("zTotal", "mean_thetaZ"), values_to="value", names_to="estimate") %>%
+  mutate(estimate = recode(estimate, "zTotal"="observed", "mean_thetaZ"="model"))
+
+# get the correlations by subject
+p1s = SxPosts_long  %>%
+  # get median subject
+  filter(user_id == SxPosts_long$user_id[1]) %>%
+  ggplot(aes(x = obs, group=estimate, color=estimate, shape=estimate)) +
+  geom_point(aes(y=value), alpha=0.75, size=5) +
+  geom_line(aes(y=value), alpha=0.75, linewidth=1.5)+
+  theme_classic(base_size=28) + theme(strip.background = element_blank(),
+                                      legend.position=c(0.18, 0.98),
+                                      legend.background = element_blank()) +
+  scale_shape_manual(values=c(20, 19))+
+  labs(y="state fluctuation", x="observation", color="", shape="")+
+  scale_color_manual(values=c("#004c6d", "#7aa6c2"))
+#] save the example subject 
+ggsave(filename = paste0(fig_dir,fit$metadata()$model_name, "_zState_example.png"), 
+       plot=p1s,
+       dpi=300, height=20, width=20, units="cm")
+
+#  subject correlations
+subCorr = summary_draws %>% group_by(subject) %>%
+  dplyr::summarize(user_id = user_id[1],
+                    r = cor(zTotal, mean_thetaZ, use="pairwise.complete.obs", method="pearson"),
+                    r_altHappy = cor(zHappy, mean_thetaZ, use="pairwise.complete.obs", method="pearson"),
+                   r_altTired = cor(zTired, mean_thetaZ, use="pairwise.complete.obs", method="pearson"))
+
+message("mean pearson r theta (z) and observed state (z) = ", round(mean(subCorr$r),2))
+message("mean pearson r theta (z) and observed alternative state - Happiness (z) = ", round(mean(subCorr$r_altHappy, na.rm=T),2))
+message("mean pearson r theta (z) and observed alternative state - Fatigue (z) = ", round(mean(subCorr$r_altTired, na.rm=T),2))
+
+
+# plot group mean 
+pGroupCorr = summary_draws %>%
+  ggplot(aes(x=obs))+ 
+  stat_summary(geom="line", aes(y=mean_thetaZ))+
+  stat_summary(geom="ribbon", aes(y=mean_thetaZ), alpha=0.2, fill="#004c6d", show.legend=T)+
+  stat_summary(geom="line", aes(y=zTotal))+
+  stat_summary(geom="ribbon", aes(y=zTotal),  alpha=0.2, fill="#7aa6c2") +
+  theme_classic(base_size=24)
+  
+
+# bar plot of corrs
+pBar = subCorr %>%
+  ggplot(aes(x=subject, y=r))+
+  geom_bar(stat="summary", alpha=0.3, width=0.4)+
+  #add distributionSS
+  ggdist::stat_halfeye(
+    width = .3, 
+    .width = 0, 
+    justification = -1, 
+    point_colour = NA, alpha=0.3) + 
+  theme_classic(base_size=28) +
+  labs(x="subject", y="zTotal & mean thetaZ cor") + theme(axis.text.x = element_blank()) +
+  geom_hline(yintercept = mean(subCorr$r), linetype="dashed")
+# vast majority fit well
+
+```
+
+
+
+
+## rew & eff sens 
+```{r, plotSens2}
+# extract individual level parameter means (for computational efficiency: full posterior is slow!)
+summary_sens = as.data.frame(fit$summary(variables = c("rewSens", "effSens"), mean, sd)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","subject", "sess"), remove=TRUE, extra="drop") %>%
+  pivot_wider(id_cols=c("subject", "sess"), names_from = c("parameter"), values_from = c("mean", "sd")) %>%
+  mutate(sess=as.numeric(sess),
+         user_id = rep(unique(data_list$user_id), times=max(sess)),
+         missing = melt(data_list$is_missing[,,1])$value) %>%
+  # join the posterior means and sds with the observed data summaries
+  inner_join(summary_draws, by=c("user_id", "sess"))
+
+# compare them agaisnt each other
+p1= summary_sens %>%
+    filter(missing == 0) %>%
+    ggplot(aes(x=mean_rewSens, y=mean_effSens, group=sess, color=sess, fill=sess))  +
+    geom_point()+
+    geom_errorbarh(aes(xmin = mean_rewSens-sd_rewSens, xmax = mean_rewSens+sd_rewSens), alpha=.2) +
+    geom_errorbar(aes(ymin = mean_effSens-sd_effSens, ymax = mean_effSens+sd_effSens), alpha=.2) +
+    xlab("posterior mean reward sensitivity") + ylab("posterior mean effort sensitivity") + 
+    theme_classic(base_size=28) +
+    #facet_wrap(~sess) +
+    labs(title="bivariate relationship") 
+
+# Generate the plot with marginal histograms
+p1M=ggExtra::ggMarginal(
+  p1,
+  type = "density",
+  groupColour =T, # Ensure grouping by 'sess' for marginal histograms
+  alpha=0.4,
+)
+# save a copy 
+ggsave(plot=p1,filename=paste0(fig_dir,fit$metadata()$model_name, "_bivariateSensitivities.png"), 
+       dpi=300, units="cm", height=30, width=30, bg="white")
+
+
+# rm corr parametric
+corWS=rmcorr::rmcorr("user_id", "mean_rewSens", "mean_effSens", summary_sens, CIs="bootstrap",
+            nreps = 100,bstrap.out = F)
+# this is not strictly right, since we post-hoc estimate correlation but gives a rough idea
+
+
+
+```
+
+
+## beta analyse : state main effects
+```{r, posterior_beta_analyse}
+# extract the full posterior for the state betas (effect on reward & eff sens)
+draws_beta = as.data.frame(unlist(posterior::merge_chains(fit$draws(variables=c("beta_rew", "beta_eff",
+                                                                                "beta_trait_rew", "beta_trait_eff"))))) %>%
+  tibble::rownames_to_column(var="draw") %>%
+  dplyr::rename("beta_rew"="1.beta_rew",
+                "beta_eff"="1.beta_eff",
+                "trait_rew" = "1.beta_trait_rew",
+                "trait_eff" = "1.beta_trait_eff")
+
+# run inference
+library(bayestestR)
+describe_posterior(
+  draws_beta$beta_rew,
+  ci=0.9, ci_method="hdi",
+  test = c("p_direction"),
+  centrality = c("mean", "median"),
+  priors=0,
+  bf_prior=0, dispersion=T
+)
+# beta eff
+describe_posterior(
+  draws_beta$beta_eff,
+  ci=0.9,ci_method="hdi",
+  test = c("p_direction"),
+  centrality = c("mean", "median"),
+  priors=0,
+  bf_prior=0, dispersion=T
+)
+
+# save for later
+#saveRDS()
+
+# plot
+pB= draws_beta %>% pivot_longer(cols=2:ncol(draws_beta), names_to = "beta", names_prefix="beta_") %>%
+    ggplot(aes(x=value, group=beta, fill=beta, color=beta)) +
+    geom_density(alpha=0.1)+
+    theme_classic(base_size=28) +
+    labs(title="state effect", x="estimate", fill="effect", color="effect",
+                           caption = paste0("90% HDI rewSens = [", 
+                          round(hdi(draws_beta$beta_rew, ci=0.9)$CI_low,2),
+                          ",",
+                          round(hdi(draws_beta$beta_rew, ci=0.9)$CI_high,2),
+                          "], PD = ", round(p_direction(draws_beta$beta_rew),2), "\n",
+                          "90% HDI effSens = [", 
+                          round(hdi(draws_beta$beta_eff, ci=0.9)$CI_low,2),
+                          ",",
+                          round(hdi(draws_beta$beta_eff, ci=0.9)$CI_high,2),
+                          "], PD = ", round(p_direction(draws_beta$beta_eff),2))) 
+
+ggsave(filename = paste0(fig_dir,fit$metadata()$model_nam, "_betas.png"), 
+       plot=pB,
+       dpi=300, height=20, width=30, units="cm")
+
+```
+
+## beta analyse: trait main effects
+```{r, posterior_beta_analyse}
+
+#fitTrait=fit;
+#CFA model:
+draws_beta = as.data.frame(unlist(posterior::merge_chains(fit$draws(variables=c("beta_rew", "beta_eff",
+                                                                                "beta_trait_rew", "beta_trait_eff"))))) %>%
+  tibble::rownames_to_column(var="draw") %>%
+  dplyr::rename("state_rew"="1.beta_rew",
+                "state_eff"="1.beta_eff",
+                "trait_rew" = "1.beta_trait_rew",
+                "trait_eff" = "1.beta_trait_eff")
+
+# describe posterior simply and provide 90% CI
+describe_posterior(draws_beta$trait_rew, ci=0.90, ci_method="hdi", centrality="mean", test="p_direction", dispersion=T)
+describe_posterior(draws_beta$trait_eff, ci=0.9, ci_method="hdi", centrality="mean", test="p_direction", dispersion=T)
+
+# plot the main state effects 
+pB_stateM = draws_beta %>% select(c("draw", "state_rew", "state_eff")) %>%
+  pivot_longer(cols=2:3,names_to = "state", names_prefix="state_") %>%
+    ggplot(aes(x=value, group=state, fill=state, color=state)) +
+    geom_density(alpha=0.1)+
+    theme_classic(base_size=20) +
+    labs(title="state main effect", x="estimate", fill="effect on:", color="effect on:",
+                           caption = paste0("90% HDI rewSens = [", 
+                          round(hdi(draws_beta$state_rew, ci=0.9)$CI_low,2),
+                          ",",
+                          round(hdi(draws_beta$state_rew, ci=0.9)$CI_high,2),
+                          "], P(Direction) = ", round(p_direction(draws_beta$state_rew),2), "\n",
+                          "90% HDI effSens = [", 
+                          round(hdi(draws_beta$state_eff, ci=0.9)$CI_low,2),
+                          ",",
+                          round(hdi(draws_beta$state_eff, ci=0.9)$CI_high,2),
+                          "], P(Direction) = ", round(p_direction(draws_beta$state_eff),2))) +
+  theme(plot.caption = element_text(size = 14,hjust = 0.25))
+
+ggsave(filename = paste0(fig_dir,fit$metadata()$model_name, "_beta_stateMain.png"), 
+       plot=pB_stateM,
+       dpi=300, height=20, width=20, units="cm")
+
+
+# plot the main trait effects 
+pB_traitM = draws_beta %>% select(c("draw", "trait_rew", "trait_eff")) %>%
+  pivot_longer(cols=2:3,names_to = "trait", names_prefix="trait_") %>%
+    ggplot(aes(x=value, group=trait, fill=trait, color=trait)) +
+    geom_density(alpha=0.1)+
+    theme_classic(base_size=20) +
+    labs(title="trait main effect", x="estimate", fill="effect on:", color="effect on:",
+                           caption = paste0("90% HDI rewSens = [", 
+                          round(hdi(draws_beta$trait_rew, ci=0.9)$CI_low,2),
+                          ",",
+                          round(hdi(draws_beta$trait_rew, ci=0.9)$CI_high,2),
+                          "], P(Direction) = ", round(p_direction(draws_beta$trait_rew),2), "\n",
+                          "90% HDI effSens = [", 
+                          round(hdi(draws_beta$trait_eff, ci=0.9)$CI_low,2),
+                          ",",
+                          round(hdi(draws_beta$trait_eff, ci=0.9)$CI_high,2),
+                          "], P(Direction) = ", round(p_direction(draws_beta$trait_eff),2))) +
+  theme(plot.caption = element_text(size = 14,hjust = 0.25))
+
+ggsave(filename = paste0(fig_dir,fit$metadata()$model_name, "_beta_traitMain.png"), 
+       plot=pB_traitM,
+       dpi=300, height=20, width=20, units="cm")
+  
+
+
+```
+
+# plot SV sensitivities agaisnt theta 
+(also see behavioural analysis, where this plot is added to Figure 4)
+```{r, gridFigure5}
+
+# make plot 
+pR_theta= summary_sens %>%
+  filter(missing == 0) %>%
+  mutate(day = (sess-1)*2) %>%
+  ggplot(aes(y=mean_rewSens, x=mean_thetaZ))  +
+  geom_point(aes(group=as.numeric(sess), color=as.numeric(day)), size=5)+
+  geom_errorbar(aes(ymin = mean_rewSens - sd_rewSens,
+                    ymax = mean_rewSens + sd_rewSens,
+                    group=as.numeric(sess), color=as.numeric(day)),
+                width = 0.05, alpha=0.5, size=0.25) +
+  geom_errorbarh(aes(xmin = mean_thetaZ - sd_thetaZ,
+                     xmax = mean_thetaZ + sd_thetaZ,
+                     group=as.numeric(sess), color=as.numeric(day)),
+                 height = 0.05, alpha=0.5, size=0.25) +
+  geom_abline(intercept = mean(summary_sens$mean_rewSens), 
+              slope = 0.18, color = "#58508d", size = 2, alpha=0.9) +
+  labs(y="Reward sensitivity (SD)", x="State motivation \U03B8 (SD)", color="Day")+
+  theme_classic(base_size=36) +
+  theme(legend.position=c(0.1, 0.8),
+        legend.key.size = unit(0.5, 'cm'),
+        legend.key.height = unit(0.75, 'cm'),
+        legend.key.width = unit(0.75, 'cm'),
+        legend.title = element_text(size = 32),
+        legend.text = element_text(size = 32)) +
+    scale_color_gradient(breaks=seq(0,14,7), high = "#bc5090", low = "#decad4",
+                      limits = c(0,14)) +
+  annotate("text", x = -0.25, y = 9.5, 
+           label = "***", size = 14)
+
+# save a copy 
+ggsave(filename=paste0(fig_dir, "figure4_rewSens_theta.png"), 
+       plot=pR_theta,
+       height=30, width=25,
+       units="cm", bg="white")
+
+# version with errorbars
+pE_theta = summary_sens %>%
+  filter(missing == 0) %>%
+  mutate(day = (sess - 1) * 2) %>%
+  ggplot(aes(y = mean_effSens, x = mean_thetaZ)) +
+  geom_errorbar(aes(ymin = mean_effSens - sd_effSens,
+                    ymax = mean_effSens + sd_effSens,
+                    group=as.numeric(sess), color=as.numeric(day)),
+                width = 0.05, alpha=0.5, size=0.25) +
+  geom_errorbarh(aes(xmin = mean_thetaZ - sd_thetaZ,
+                     xmax = mean_thetaZ + sd_thetaZ,
+                     group=as.numeric(sess), color=as.numeric(day)),
+                 height = 0.05, alpha=0.5, size=0.25) +
+  geom_point(aes(group=as.numeric(sess), color=as.numeric(day)), size=3)+  
+  labs(y = "effort sensitivity (SD)", x = "state motivation \U03B8 (SD)", 
+       color = "Day") +
+  theme_classic(base_size = 28) +
+  theme(
+        legend.key.size = unit(0.5, 'cm'),
+        legend.key.height = unit(0.75, 'cm'),
+        legend.key.width = unit(0.75, 'cm'),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 16)) +
+    scale_color_gradient(breaks=seq(0,14,7), high = "#ff6361", low = "#ffd6d1",
+                      limits = c(0,14)) 
+
+
+# save a copy 
+ggsave(filename=paste0(fig_dir, "figure4_effSens_theta.png"), 
+       plot=pE_theta+theme_classic(base_size=36),
+       height=20, width=20,
+       units="cm", bg="white")
+
+# plot of the beta weights themselves
+# load beta posteriors for the current state model
+draws_beta = readRDS(file=paste0("D:/EMA_Motivation/data/study1/ema/task/modelling/trait_intercept_doubleBeta_model_draws_beta.rds")) %>%
+  # rename vars to include beta prefix
+  dplyr::rename(beta_rew_deltaRewTSF = delta_rewTSF, 
+                beta_rew_deltaRewTSB = delta_rewTSB)
+# load the timeseries betas (previous and future)
+draws_beta_TS = readRDS(file=paste0("D:/EMA_Motivation/data/study1/ema/task/modelling/trait_intercept_doubleBeta_model_draws_beta_TS.rds")) %>%
+  # rename vars to include beta prefix
+  dplyr::rename(beta_rew_previous = previousState, 
+                beta_rew_next   = nextState)
+
+library(bayestestR)
+# combine them (without duplicate draws in df2)
+draws = cbind(draws_beta, draws_beta_TS[, 2:ncol(draws_beta_TS)]) 
+
+draws_dir = draws %>% select(1, 2,6,7) %>%
+  # ensure df is in directional order
+  pivot_longer(cols = c(2:4), names_to = "beta", values_to = "estimate") %>%
+  mutate(beta = factor(beta, levels = c("beta_rew_next", "beta_rew", "beta_rew_previous"),
+                       labels = c( "future", "current", "past")))
+
+
+# plot
+# Plot with reordered y-axis
+pB = draws_dir %>% 
+  ggplot(aes(x = estimate, y = beta, group = beta, fill = beta)) +
+  ggdist::stat_dist_slabinterval(.width = c(.1, .9), alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_classic(base_size = 28) +
+  labs(fill = "direction", x = "Effect on (current) reward sensitivity",
+       y="State Motivation") + 
+  scale_fill_manual(values=c("#ffd4ee", "#d39bb8", "#e9b7d3")) + 
+  # manual sig plots
+   annotate("text", x = 0.4, y = 3.25, 
+           label = "**", size = 14) +
+     annotate("text", x = 0.4, y = 2.25, 
+           label = "***", size = 14)
+
+
+```
+
+
+# Param recovery
+load model fit #
+generate predictions (choices & self-report endorsement) from posteriors
+then refit the model to the simulated choices & self-report
+test relationship between effSens, rewSens & theta 
+```{r, prepareData_fit_model}
+# for the recovery model, we set some reasonable bounds on the parameters to aid recovery
+model_name = "rewEff-linear-bernoulli-multisess-joint-IRT-1param" # to load the original fit 
+recovery_model = paste0(model_name, "-bounded-recovery")
+stan_dir = c(paste0(repo_dir, 'analysis/stan-models/'))
+
+# sampling parameters for model fitting
+sampling_params=list(nFits=1,chains=4, warmup=2000,iter=2000, adapt_delta=0.95,
+                     thin=1, # thin the samples to save on memory as the long IRT model is very memory intensive
+                     max_treedepth=14, init_r=1.5) # increase max tree depth range and initial starting values
+
+# # compile the recovery model 
+model = cmdstan_model(paste0(stan_dir,recovery_model,".stan"), compile=T)
+
+# load the original model to generate predictions (if you didn't already )
+f_name=paste0(model_dir,model_name, ".rds")
+# read it 
+fit = readRDS(file=f_name)
+
+# load the data
+# to do so, we need to provide all the necessary joint info
+joint_inputs = list(quest_data=filter(beh_data, user_id %in% long_data_ex$user_id), # self-report EMA data
+                    vars_to_model=vars_to_model) # apathy data 
+
+# load the data list which was originally input to stan for the model 
+data_list = rewEff_prepare_retest(long_data_ex,minSess=4, gameTrials=23, joint=T, joint_inputs=joint_inputs)
+
+## set up parameter recovery ### 
+# get the model replicated (y_rep) self-report endorsements (median across posterior forces 1 or 0 )
+y_rep_state = as.data.frame(fit$summary(variables = c("y_rep"), median))  %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","N", "obs"), remove=TRUE, extra="drop") %>%
+  mutate(obs = as.numeric(obs), N=as.numeric(N),
+         y =  melt(data_list$Y[,])$value,
+         # add the missing indicator, and rep by 4 because there are 4 items for each timepoint
+         missing = rep(melt(data_list$is_missing_state[,])$value, each=4))
+
+# calculate posterior predictive accuracy (observed=replicated)
+PPaccState <- y_rep_state %>% mutate(acc = (median==y)) %>%
+  filter(missing==0) %>% # remove states which were missing in the observed data (not provided by subject)
+  summarise(mean_pred_acc=mean(acc), sd_pred_acc=sd(acc))
+
+message('model posterior predictive accuracy states M/SEM = ', round(PPaccState$mean_pred_acc,3), " +/- ", round(PPaccState$sd_pred_acc/sqrt(nrow(y_rep_state)),3))
+
+# reformat self-report endorsements to match the input data 
+Y_rep = array(NA, dim = dim(data_list$Y))
+# model replicated
+for (i in 1:data_list$N) {
+  for(s in 1:data_list$nStateTimes){
+  Y_rep[i, s] <- with(y_rep_state, as.integer(median[N==i & obs==s]))
+  }
+}
+
+
+# retrieve the model replicated choices (called post_pred_t)
+post_pred_t = as.data.frame(fit$summary(variables = c("post_pred_t"), median)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","subject", "sess", "trial"), remove=TRUE, extra="drop") %>%
+  mutate(trial = as.numeric(trial), 
+         sess=as.numeric(sess), 
+         subject=as.numeric(subject),
+         # add the observed data 
+         y =  melt(data_list$choice01[,,])$value,
+         # add indicator for missing trials 
+         missing =  melt(data_list$is_missing[,,])$value) 
+
+# calculate posterior predictive accuracy (observed=replicated)
+PPacc <- post_pred_t %>% mutate(acc = (median==y)) %>%
+  filter(missing==0) %>% # remove trials which were missing in the observed data 
+  summarise(mean_pred_acc=mean(acc), sd_pred_acc=sd(acc))
+# print for ease
+message('model posterior predictive accuracy choices M/SEM = ', round(PPacc$mean_pred_acc,3), " +/- ", round(PPacc$sd_pred_acc/sqrt(nrow(post_pred_t)),3))
+
+
+# reformat the model produced choices in the same way as self-report data 
+choice01_rep = array(NA, dim = dim(data_list$choice01))
+# put them into the data_list stan format (& replace the real data with these below)
+for (i in 1:data_list$nPpts) {
+  for(s in 1:data_list$nTaskTimes){
+  choice01_rep[i, s, 1:data_list$nT_ppts[i]] <- with(post_pred_t, as.integer(median[subject==i & sess==s]))
+
+  }
+}
+
+# replace the actual choices in data with the model produced ones, and fit the model again:
+data_list_rep = data_list; # copy the data over
+data_list_rep$choice01 = choice01_rep; # replace choices with model's choices
+data_list_rep$Y = Y_rep; # replace state endorsements with model's
+data_list_rep$subID=NULL;
+
+# refit model to the replicated data with the same sampling parameters 
+message('re-fitting model to model predicted data for parameter recovery')
+message("local device time started: ", Sys.time())
+fit_rep <- model$sample(
+    data = data_list_rep, 
+    chains = sampling_params$chains, # n separate chains to assess convergence
+    iter_warmup = sampling_params$warmup, # these are used to tune the sampler and ’burn in’
+    iter_sampling = sampling_params$iter, # number of iterations (#kept = chains*(iter - warmup)
+    parallel_chains = pmin(parallel::detectCores(),sampling_params$chains),   # get number of cores available for parallelisation (either all or max available)
+    adapt_delta = sampling_params$adapt_delta,
+    max_treedepth = sampling_params$max_treedepth,
+    #threads_per_chain = sampling_params$threads_per_chain, # 
+    thin = sampling_params$thin, # thinning factor to save memory
+    init = sampling_params$init_r, 
+    output_dir = model_dir)
+    #opencl_ids = c(0, 0)
+# save:
+saveRDS(fit_rep, file = paste0(model_dir, recovery_model, ".rds")) # add REP to file name, indicating recovery model
+```
+
+
+## plot PR choice
+plot the correspondence between value parameters (rewSens & effSens) 
+between the original and recovered model 
+```{r, plotSimpleParamRecoveryChoice}
+# individual level parameter distribution means (for computational efficiency: full posterior is slow!)
+posts = as.data.frame(fit$summary(variables = c("rewSens", "effSens"), mean, sd)) %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","subject", "sess"), remove=TRUE, extra="drop") %>%
+  mutate(user_id = rep(data_list$user_id, times=data_list$nTaskTimes*2),
+         missing = rep(melt(data_list$is_missing[,,1])$value, times=2))
+# replicated posteriors
+posts_rep = as.data.frame(fit_rep$summary(variables = c("rewSens", "effSens"), mean, sd)) %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","subject", "sess"), remove=TRUE, extra="drop")
+
+# merge them
+posts_PR = merge(posts, posts_rep, by=c("subject", "parameter", "sess"), suffixes = c("_og", "_rep"),
+                   no.dups = TRUE) %>% 
+  mutate(day=(as.numeric(sess)-1)*2)
+
+
+# plot them agaisnt each other
+pR= posts_PR %>%
+    filter(parameter=="rewSens") %>%
+    ggplot(aes(y=mean_rep, x=mean_og))  +
+    geom_point(aes(fill=day, color=day), size=2, alpha=0.7)+geom_smooth(se=F, method="lm", color="black", alpha=0.4)+
+    # geom_errorbar(aes(ymin = mean_rep-sd_rep, ymax = mean_rep+sd_rep, color=day), alpha=.2) +
+    # geom_errorbarh(aes(xmin = mean_og-sd_og, xmax = mean_og+sd_og, color=day), alpha=.2) +
+    ggpubr::stat_cor(method = "pearson", label.y = 0, label.x=0, size=6, 
+                    cor.coef.name= "r",
+                        label.sep='\n',
+                        p.accuracy = 0.001, r.accuracy = 0.01) +
+    ylab("recovered posterior mean ± SD") + xlab("posterior mean ± SD") +
+    theme_classic(base_size=28) +
+    labs(title="reward sensitivity", color="day", fill="day") + facet_wrap(~day, ncol=4) + theme(legend.position="none")
+
+ggsave(filename = paste0(fig_dir,file, "_PR_rewSens.png"), 
+       plot=pR,
+       dpi=300, height=30, width=30, units="cm")
+
+# effort
+pE= posts_PR %>%
+    filter(parameter=="effSens") %>%
+    ggplot(aes(y=mean_rep, x=mean_og))  +
+    geom_point(aes(fill=day, color=day), size=2, alpha=0.7)+geom_smooth(se=F, method="lm", color="black", alpha=0.4)+
+    # geom_errorbar(aes(ymin = mean_rep-sd_rep, ymax = mean_rep+sd_rep, color=day), alpha=.2) +
+    # geom_errorbarh(aes(xmin = mean_og-sd_og, xmax = mean_og+sd_og, color=day), alpha=.2) +
+    ggpubr::stat_cor(method = "pearson", label.y = 0,
+                     label.x=0, size=6,
+                    cor.coef.name= "r",
+                        label.sep='\n',
+                        p.accuracy = 0.001, r.accuracy = 0.01) +
+    ylab("recovered posterior mean ± SD") + xlab("posterior mean ± SD") +
+    theme_classic(base_size=28) +
+    labs(title="effort sensitivity", color="day", fill="day") + facet_wrap(~day, ncol=4) + theme(legend.position="none")
+
+
+ggsave(filename = paste0(fig_dir,file,"_PR_effSens.png"), 
+       plot=pE,
+       dpi=300, height=30, width=30, units="cm")
+
+# get the correlation across all timepoints
+cor.test(posts_PR$mean_rep[posts_PR$parameter=="rewSens"], posts_PR$mean_og[posts_PR$parameter=="rewSens"])
+cor.test(posts_PR$mean_rep[posts_PR$parameter=="effSens"], posts_PR$mean_og[posts_PR$parameter=="effSens"])
+
+
+```
+
+## PR: test retest
+is the correlation between and within participants the same for both fitted and replicated parameters?
+```{r, PR_test_retest}
+# rewSens, get reliabilities for each possible combination (t=28), original model
+summary_R_rewSens = as.data.frame(fit$summary(variables = c("R_rewSens"), mean, sd)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","game1", "game2"), remove=TRUE, extra="drop") %>%
+  # take only the unique pairs 
+  filter(!duplicated(t(apply(.[c("game1", "game2")], 1, sort))), 
+         !duplicated(t(apply(.[c("game1", "game2")], 1, sort, decreasing = TRUE))))%>%
+  # filter out correlations between the same game
+  filter(!game1 == game2) 
+# replicated model 
+summary_R_rewSens_rep = as.data.frame(fit_rep$summary(variables = c("R_rewSens"), mean, sd)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","game1", "game2"), remove=TRUE, extra="drop") %>%
+  # take only the unique pairs 
+  filter(!duplicated(t(apply(.[c("game1", "game2")], 1, sort))), 
+         !duplicated(t(apply(.[c("game1", "game2")], 1, sort, decreasing = TRUE))))%>%
+  # filter out correlations between the same game
+  filter(!game1 == game2) 
+
+# bind them together
+R_rewSens = merge(summary_R_rewSens, summary_R_rewSens_rep,
+                   by=c("var", "parameter", "game1", "game2"), suffixes = c("_og", "_rep"),
+                   no.dups = TRUE)
+# correlate original mean with replicated
+cor.test(R_rewSens$mean_og, R_rewSens$mean_rep) 
+
+
+
+# get summary of model estimated reliability all game combinations similar to behavioural analyses with ICC
+# eff sens 
+summary_R_effSens = as.data.frame(fit$summary(variables = c("R_effSens"), mean, sd)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","game1", "game2"), remove=TRUE, extra="drop") %>%
+  # take only the unique pairs 
+  filter(!duplicated(t(apply(.[c("game1", "game2")], 1, sort))), 
+         !duplicated(t(apply(.[c("game1", "game2")], 1, sort, decreasing = TRUE))))%>%
+  # filter out correlations between the same game
+  filter(!game1 == game2) 
+# replicated model 
+summary_R_effSens_rep = as.data.frame(fit_rep$summary(variables = c("R_effSens"), mean, sd)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","game1", "game2"), remove=TRUE, extra="drop") %>%
+  # take only the unique pairs 
+  filter(!duplicated(t(apply(.[c("game1", "game2")], 1, sort))), 
+         !duplicated(t(apply(.[c("game1", "game2")], 1, sort, decreasing = TRUE))))%>%
+  # filter out correlations between the same game
+  filter(!game1 == game2) 
+
+# bind them together
+R_effSens = merge(summary_R_effSens, summary_R_effSens_rep,
+                   by=c("var", "parameter", "game1", "game2"), suffixes = c("_og", "_rep"),
+                   no.dups = TRUE)
+# correlate original mean with replicated
+cor.test(R_effSens$mean_og, R_effSens$mean_rep) 
+
+# theta (state motivation, raw value, not person centred)
+summary_R_theta= as.data.frame(fit$summary(variables = c("R_theta"), mean, sd)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","t1", "t2"), remove=TRUE, extra="drop") %>%
+  # take only the unique pairs 
+  filter(!duplicated(t(apply(.[c("t1", "t2")], 1, sort))), 
+         !duplicated(t(apply(.[c("t1", "t2")], 1, sort, decreasing = TRUE))))%>%
+  # filter out correlations between the same timepoint
+  filter(!t1 == t2) %>% 
+  # get mean values across all game combinations
+  summarise(meanR = mean(mean), meanSD = mean(sd)) %>%
+  mutate_if(is.numeric, round,2)
+# replicated model
+summary_R_theta_rep= as.data.frame(fit$summary(variables = c("R_theta"), mean, sd)) %>%
+  rownames_to_column(var = "var") %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","t1", "t2"), remove=TRUE, extra="drop") %>%
+  # take only the unique pairs 
+  filter(!duplicated(t(apply(.[c("t1", "t2")], 1, sort))), 
+         !duplicated(t(apply(.[c("t1", "t2")], 1, sort, decreasing = TRUE))))%>%
+  # filter out correlations between the same timepoint
+  filter(!t1 == t2) %>% 
+  # get mean values across all game combinations
+  summarise(meanR = mean(mean), meanSD = mean(sd)) %>%
+  mutate_if(is.numeric, round,2)
+
+# merge and run corr 
+R_theta = merge(summary_R_theta, summary_R_theta_rep,
+                   by=c("var", "parameter", "t1", "t2"), suffixes = c("_og", "_rep"),
+                   no.dups = TRUE)
+# correlate original mean with replicated
+cor.test(R_theta$mean_og, R_theta$mean_rep) 
+
+```
+
+
+
+## plot: PR state
+
+```{r, plotSimpleParamRecoveryState}
+# individual level parameter distribution means (for computational efficiency: full posterior is slow!)
+posts_state = as.data.frame(fit$summary(variables = c("thetaZ"), mean, sd)) %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","subject", "obs"), remove=TRUE, extra="drop")
+
+# replicated posteriors
+posts_state_rep = as.data.frame(fit_rep$summary(variables = c("thetaZ"), mean, sd)) %>%
+  separate(variable, sep="\\[|\\,|\\]", into=c("parameter","subject", "obs"), remove=TRUE, extra="drop") 
+
+# merge them
+posts_state_PR = merge(posts_state, posts_state_rep, by=c("subject", "parameter", "obs"), suffixes = c("_og", "_rep"),no.dups = TRUE) %>%
+  mutate(t = as.numeric(obs),
+         subject=as.numeric(subject))
+
+
+# plot them agaisnt each other
+pT= posts_state_PR %>%
+    ggplot(aes(y=mean_rep, x=mean_og))  +
+    geom_point(aes(fill=t, color=t), size=2, alpha=0.7)+
+    geom_errorbar(aes(ymin = mean_rep-sd_rep, ymax = mean_rep+sd_rep, color=t), alpha=.2) +
+    geom_errorbarh(aes(xmin = mean_og-sd_og, xmax = mean_og+sd_og, color=t), alpha=.2) +
+    geom_smooth(se=F, method="lm", color="black", alpha=0.4)+
+    ggpubr::stat_cor(method = "pearson", label.y = max(posts_PR$mean_rep)*0.1,
+                     label.x=max(posts_state_PR$mean_og)*0.5, size=6,
+                    cor.coef.name= "r",
+                        label.sep='\n',
+                        p.accuracy = 0.001, r.accuracy = 0.01) +
+    ylab("recovered posterior mean ± SD") + xlab("posterior mean ± SD") +
+    theme_classic(base_size=28) +
+    labs(title="latent state", color="t", fill="t") + 
+    scale_color_continuous(breaks=seq(0,28,7)) +
+    scale_fill_continuous(breaks=seq(0,28,7)) 
+
+pT
+
+ggsave(filename = paste0(fig_dir,fit$metadata()$model_name, "_PR_theta.png"), 
+       plot=pT,
+       dpi=300, height=30, width=30, units="cm")
+
+# correlation across timepoints 
+cor.test(posts_state_PR$mean_rep, posts_state_PR$mean_og)
+
+```
+
+
+
+# TS lag-1 model 
+fit a timeseries model where we compare state t-1 to state t+1
+```{r, TSmodel}
+model_name <- "rewEff-linear-bernoulli-multisess-joint-IRT-1param-rewSens-lag1"
+
+
+#   # if it's an old model create an updated version, and save a back up
+model$format(canonicalize = TRUE, overwrite_file = TRUE, backup = F)
+#
+model = cmdstan_model(paste0(stan_dir,model_name,".stan"),force_recompile=TRUE)
+
+# sampling parameters for model fitting 
+sampling_params=list(nFits=1,chains=4, warmup=2000,iter=2000, adapt_delta=0.95, 
+                     thin=1, # if you want to thin samples
+                     max_treedepth=10, init_r=1.25)
+
+# filter for only games 2-8 
+long_data_subset = filter(long_data_ex, !sess %in% c(1,8))
+# check the data that will be modelled
+
+data_list = rewEff_prepare_retest(long_data_subset,
+                                  model_data=NULL, minSess=1, 
+                                  gameTrials=23, 
+                                  joint=T, joint_inputs=joint_inputs)
+
+ # create an output file name
+f_name = paste0(model_dir, model_name,".rds")
+
+# fit the model
+fitTS=rewEff_fit_retestCMDstan(long_data_subset, 
+                  model=model,# model file stan should fit,
+                  sampling_params=sampling_params,
+                  f_name= f_name, # where to save the rds output
+                  savepath = model_dir,
+                  minSess=1,
+                  gameTrials=23,
+                  joint=T, joint_inputs = joint_inputs # specify joint model 
+                  )
+
+
+```
+
+
+## TS: beta analyse 
+```{r, posterior_beta_analyse}
+# fit = readRDS(file = paste0(model_dir, "rewEff-linear-bernoulli-multisess-missing-joint-doubleBeta-IRT-t29_1param-linear_nhDelta_local_params_minSess2_combinedSample.rds"))
+# # fit_tidy <- fit %>% 
+# #   tidybayes::gather_draws(beta_eff, beta_rew) %>%
+# #   mutate(variable=recode(.variable, "beta_eff"="effort sensitivity", "beta_rew"="reward sensitivity"))
+
+# get the next state betas
+draws_beta = as.data.frame(unlist(posterior::merge_chains(fitTS$draws(variables=c("beta_rew_prev", "beta_rew_next",
+                                                                                  "beta_trait_rew", "beta_trait_eff"))))) %>%
+  tibble::rownames_to_column(var="draw") %>%
+  dplyr::rename("beta_rew_prev"="1.beta_rew_prev",
+                "beta_rew_next"="1.beta_rew_next",
+                "beta_trait_rew"="1.beta_trait_rew",
+                "beta_trait_eff"="1.beta_trait_eff"
+               )
+
+
+# do bayesian inference with bayestest r 
+library(bayestestR)
+# run bayesian inference
+describe_posterior(
+  draws_beta$beta_rew_prev,
+  ci=0.9, ci_method="hdi",
+  test = c("p_direction"),
+  centrality = c("mean", "median"),
+  priors=0,
+  bf_prior=0, dispersion=T
+)
+# PD = the proportion of the posterior distribution that has the same sign as the median
+# with recommended interpretation of 
+# ≤95 (‘uncertain’), ≥95 (‘possibly existing’), 
+# ≥97 (‘likely existing’), ≥99 (‘probably existing’) and ≥99.9(‘certainly existing’)
+
+# next state
+describe_posterior(
+  draws_beta$beta_rew_next,
+  ci=0.9, ci_method="hdi",
+  test = c("p_direction"),
+  centrality = c("mean", "median"),
+  priors=0,
+  bf_prior=0, dispersion=T
+)
+
+
+```
+
+
+# TS 2 model 
+given that previous state is related to reward sensitivity; how far does it go back ? 
+fit a model where the lag-2 previous state modulates rewSens, as well as lag-1 
+both beta_rew_prev1 and beta_rew_prev2 are given empirical prior of the current state beta 
+only go to lag-2 because autocorrelation was only significant up to lag-2 
+
+```{r, TSmodel}
+model_name <- "rewEff-linear-bernoulli-multisess-joint-IRT-1param-rewSens-lag2"
+#   # if it's an old model create an updated version, and save a back up
+model$format(canonicalize = TRUE, overwrite_file = TRUE, backup = F)
+#
+model = cmdstan_model(paste0(stan_dir,model_name,".stan"),force_recompile=TRUE)
+
+# sampling parameters for model fitting 
+sampling_params=list(nFits=1,chains=4, warmup=2000,iter=2000, adapt_delta=0.95, 
+                     thin=1, # if you want to thin samples
+                     max_treedepth=10, init_r=1.25)
+
+# filter for only games 2-8 
+long_data_subset = filter(long_data_ex, !sess %in% c(1,8))
+# check the data that will be modelled
+
+data_list = rewEff_prepare_retest(long_data_subset,
+                                  model_data=NULL, minSess=1, 
+                                  gameTrials=23, 
+                                  joint=T, joint_inputs=joint_inputs)
+
+ # create an output file name
+f_name = paste0(model_dir, model_name,".rds")
+
+
+# fit the model
+fitTS2=rewEff_fit_retestCMDstan(long_data_subset, 
+                  model=model,# model file stan should fit,
+                  sampling_params=sampling_params,
+                  f_name= f_name, # where to save the rds output
+                  savepath = model_dir,
+                  minSess=1,
+                  gameTrials=23,
+                  joint=T, joint_inputs = joint_inputs # specify joint model 
+                  )
+
+
+```
+
+
+## TS2 betas
+```{r, posterior_beta_analyse}
+# fit = readRDS(file = paste0(model_dir, "rewEff-linear-bernoulli-multisess-missing-joint-doubleBeta-IRT-t29_1param-linear_nhDelta_local_params_minSess2_combinedSample.rds"))
+# # fit_tidy <- fit %>% 
+# #   tidybayes::gather_draws(beta_eff, beta_rew) %>%
+# #   mutate(variable=recode(.variable, "beta_eff"="effort sensitivity", "beta_rew"="reward sensitivity"))
+
+# get the next state betas
+draws_beta = as.data.frame(unlist(posterior::merge_chains(fitTS2$draws(variables=c("beta_rew_prev1", "beta_rew_prev2"))))) %>%
+  tibble::rownames_to_column(var="draw") %>%
+  dplyr::rename("lag1"="1.beta_rew_prev1",
+                "lag2"="1.beta_rew_prev2"
+               ) %>%
+  mutate(delta = lag1 - lag2)
+
+describe_posterior(draws_beta[, "lag1"], ci=0.9, ci_method="hdi", centrality="mean", test="p_direction", dispersion=T)
+describe_posterior(draws_beta[, "lag2"], ci=0.9, ci_method="hdi", centrality="mean", test="p_direction", dispersion=T)
+
+# plot
+pBr= draws_beta %>% 
+    pivot_longer(cols=2:3, names_to="beta", values_to="estimate") %>%
+    ggplot(aes(x=estimate, y=beta, group=beta, fill=beta)) +
+    ggdist::stat_dist_slabinterval(.width=c(.1,.9), alpha=0.5) +geom_vline(xintercept=0, linetype="dashed")+
+    theme_classic(base_size=28) +
+  labs(fill="direction", y="\U03B2") + theme(legend.position="none")
+
+
+pBr# there's a likely existing effect of the previous state (P direction > 0.97 and 90% HDI excludes zero)
+# but there is no effect of the next state, this suggests that the causal direction is more likely to be 
+# state --> rewSens
+# however, there is no meaningful difference at the 90% HDI between the two 
+# (i.e., the difference posterior does not exclude zero)
+# so basically there's an effect of prev and not next, but there's not a significant difference in these effects
+# we cannot say previous is bigger than next, but we can say next isn't there, and previous is 
+# a design that is better suited to temporal effects could confirm this 
+
+# that is, the proportion of the posterior distribution that has the same sign as the median
+# with recommended interpretation of 
+# ≤95 (‘uncertain’), ≥95 (‘possibly existing’), 
+# ≥97 (‘likely existing’), ≥99 (‘probably existing’) and ≥99.9(‘certainly existing’)
+
+ggsave(filename = paste0(fig_dir,fitTS$metadata()$model_name, "_betaCompare.png"), 
+       plot=pBr,
+       dpi=300, height=20, width=20, units="cm")
+```
+
+
+
+
+

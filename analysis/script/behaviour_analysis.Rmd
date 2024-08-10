@@ -1,0 +1,2524 @@
+---
+title: "beh analysis"
+author: "Sam Hewitt"
+date: "27/09/2023"
+output: html_document
+---
+behavioural analysis 
+
+# set up
+```{r setup, include=FALSE}
+# 0. Set up ----
+rm(list=ls()) #clear workspace 
+#dev.off(dev.list()["RStudioGD"]) #clear workspace and remove plots
+options(scipen=999)
+
+# load packages
+packages <- c("rjson","dplyr", "tidyverse", "tidyr", "reshape2",
+              "ggpmisc", "patchwork", "plotly", "devtools", "nlme", "kableExtra", "robustlmm", "ggsignif")
+if (length(setdiff(packages, rownames(installed.packages()))) > 0 ) {
+  install.packages(setdiff(packages, rownames(installed.packages())))
+}
+lapply(packages, require, character.only=TRUE)
+
+# set-up where to look for code, data, and what task version to get #
+repo_path = paste0('C:/Users/', Sys.getenv("USERNAME"),'/Documents/GitHub/reward-effort-2afc-firebase-BEX-FU/')
+# where firebase raw output files have been downloaded to
+source(paste0(repo_path, 'analysis/functions/rew_eff_functions.R'))
+source(paste0(repo_path, 'analysis/functions/util_functions.R'))
+
+# load rainCloudPlot src code
+source_url("https://raw.githubusercontent.com/RainCloudPlots/RainCloudPlots/master/tutorial_R/R_rainclouds.R")
+ema_packages(); plot_packages(); 
+
+# make select dplyr default
+select <- dplyr::select
+
+# STUDY 1 -
+# when using pilot data, which task version to filter for
+task_ver <- "study1"
+part = "all"
+
+# directories
+data_dir <- paste0("D:/EMA_Motivation/data/", task_ver, "/")
+task_data_dir <- paste0("D:/EMA_Motivation/data/", task_ver, "/ema/task/")
+fig_dir <- paste0(repo_path, "analysis/figs/")
+# table directory for direct output tables
+table_dir = paste0(repo_path, "analysis/tables/")
+
+# load previously preprocessed data 
+baseline_data = read.csv(file = paste0(task_data_dir, "csv/quest_data.csv")) # trait questionnaire data 
+long_data = read.csv(file = paste0(task_data_dir, "csv/long_data_anon.csv")) # long trial-wise task data
+beh_data = read.csv(file=paste0(task_data_dir, "csv/behavioural_data_anon.csv")) # summary beh data for each session
+
+```
+
+
+
+# summarise sample
+```{r, combined_sample}
+# get time to complete tasks 
+QC_data = long_data %>%
+  group_by(user_id, sess) %>%
+  arrange(studyStartTime) %>%
+  summarise(nTrials=n(), # number of trials completed,
+            mChoiceRT = median(choiceRT, na.rm=T),
+            timeOnTask = round((trialStartTime[nTrials] - trialStartTime[1]) / 60000, 1)) %>%
+  ungroup()
+
+# what's the median time on task
+message('median time on task = ', median(QC_data$timeOnTask))
+pTime=ggplot(QC_data, aes(x=timeOnTask))+
+  geom_histogram()+
+  theme_classic(base_size=24) 
+
+# choice rt across these tasks 
+pRT=ggplot(QC_data, aes(x=mChoiceRT))+
+  geom_histogram()+
+  theme_classic(base_size=24) 
+
+# print out some descriptives of the sample
+message(paste0("total N included ", nsub(beh_data$user_id)))
+# check match between summary & long trial-level data 
+message(paste0("total N included LONG DATA (trial level) ", nsub(long_data$subID)))
+message(paste0("total game timepoints included (summary data) ", sum(!is.na(beh_data$DeltaEffortChosen))))
+message(paste0("total game timepoints included (long trial data) ", nrow(QC_data)))
+# total subjective state timepoints
+message(paste0("combined samples total self-report timepoints included ", sum(!is.na(beh_data$zTotal))))
+
+# calculate summary completion again
+summaryComplete = beh_data %>% group_by(user_id) %>%
+  summarise(tGames = sum(!is.na(DeltaEffortChosen)),
+            tStates = sum(!is.na(Total)),
+            responses = sum(!is.na(delay_mins))) 
+
+# n games per person
+message(paste0("person mean N games = ", round(mean(summaryComplete$tGames), 1)),
+        " +/- ", round(sd(summaryComplete$tGames)/sqrt(nrow(summaryComplete)),1), " or ", (round(mean(summaryComplete$tGames), 1)/8)*100, "%")
+# min games 
+message(paste0("person min Games = ", min(summaryComplete$tGames)))
+# min states
+message(paste0("person min t states = ", min(summaryComplete$responses)))
+# mode games 
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
+
+# person means 
+message(paste0("person mean states = ", round(mean(summaryComplete$tStates), 1)),
+        " +/- ", round(sd(summaryComplete$tStates)/sqrt(nrow(summaryComplete)),1))
+# most common number completed
+message(paste0("person mode Games = ", getmode(summaryComplete$tGames)))
+message(paste0("person mode timepoints = ", getmode(summaryComplete$responses)))
+
+# of all responses
+message(paste0("person mean valid responses = ", round(mean(summaryComplete$responses), 1)),
+        " +/- ", round(sd(summaryComplete$responses)/sqrt(nrow(summaryComplete)),1), " or ", 
+        round((mean(summaryComplete$responses)/max(summaryComplete$responses))*100,2), "%")
+
+
+# included participants as a perccentage of the total 
+message('included participants were ', nrow(summaryComplete), ' out of ', length(unique(baseline_data$user_id)), 
+        ' or ', round(nrow(summaryComplete)/length(unique(baseline_data$user_id))*100, 2), '%')
+
+# mean age of included participants
+demo_data = beh_data %>% group_by(user_id) %>% 
+  summarise(age = Age[1], Sex=Sex[1]) %>% ungroup()
+message('mean (included participants) age = ', round(mean(demo_data$age),2), ' +/-', 
+        ' sem ', round(sd(demo_data$age)/ sqrt(nrow(demo_data)),2))
+# check included gender split
+gender_counts = demo_data %>% group_by(Sex) %>% summarise(n = n(), prop = n()/nrow(demo_data)*100)
+
+## FOR THE REMAINING ANALYSIS load the data which excludes recalibration and catch trials 
+warning('now switching long-data to exclude catch and recalibration trials')
+long_data = read.csv(file = paste0(task_data_dir, "csv/long_data_exclCatch_anon.csv"))# first load all
+```
+
+
+# estimate trait-apathy
+CFA to generate apathy estimate from apathy-motivation questionnaires
+
+```{r, CFA}
+fa_packages()
+# extract only the subscale scores
+data_baseT=as.matrix(baseline_data[, 2:ncol(baseline_data)])
+
+# check some simple histograms  
+h1 = hist(baseline_data$AMI_Total)
+h2 = hist(baseline_data$AMI_behavioural)
+h3 = hist(baseline_data$AMI_social)
+h4 = hist(baseline_data$AMI_emotional)
+h5 = hist(baseline_data$MFI_Total)
+h6 = hist(baseline_data$BIS_total)
+
+
+# 1 factor CFA model: 
+uni.CFA <- ' unifactor =~ AES_Total + AMI_Total + FFMRF_conscientiousness + FFMRF_extraversion + MFI_Total + DASS21_Depression + DASS21_Anxiety + DASS21_Stress + FFMRF_neuroticism + SHAPS_Total'
+
+# scale vars
+data_baseVars = scale(as.data.frame(data_baseT))
+fit <- cfa(uni.CFA, data = data_baseVars)
+
+summary(fit, fit.measures=T, standardized=T)
+
+# 1 factor apathy subscores: 
+apathy_subscales = c("AES_Total",  "AMI_Total","FFMRF_conscientiousness", "FFMRF_extraversion", "MFI_Total")
+# take only complete data for those 
+apathy_data= baseline_data[complete.cases(baseline_data[, apathy_subscales]),] 
+# extract only the scores:
+data_baseT=as.matrix(apathy_data[, 2:ncol(apathy_data)])
+# CFA formula 
+Apathy.CFA <- ' apathy=~ AES_Total + AMI_Total + FFMRF_conscientiousness + FFMRF_extraversion + MFI_Total'
+
+# scale vars, then fit 
+data_baseVars = scale(as.data.frame(data_baseT))
+fit <- cfa(Apathy.CFA, data = data_baseVars)
+# display summary
+summary(fit, fit.measures=T, standardized=T)
+
+# get apathy scores and add to data 
+apathy_scores <- as.data.frame(cbind(baseline_data[, "user_id"], lavPredict(fit))) #Predict score (regression method)
+names(apathy_scores) = c("user_id", "apathy")
+
+# combine behavioural / self-report summary data & apathy scores 
+data_combined = beh_data %>%
+  inner_join(dplyr::select(apathy_scores, c("user_id", starts_with(c("apathy")))), by="user_id")
+  
+# check if any apathy scores are missing
+apathyCheck = data_combined %>% group_by(user_id) %>% summarise(apathy = max(apathy, na.rm=T))
+
+message(length(setdiff(unique(beh_data$user_id), apathyCheck$user_id)),' 
+        users not included in trait-apathy analysis due to incomplete quest data ')
+
+```
+
+# check floor/ceiling states:
+```{r, ceiling_state}
+#check if proportion of floor or ceiling reports is related to states 
+# add marker for floor or ceiling
+data_combined = data_combined %>% mutate(floorState=ifelse(Total==min(Total, na.rm=T),1,0),
+                                    ceilingState=ifelse(Total==max(Total, na.rm=T),1,0)) 
+# summarise for each subject (proportion)
+propDist = data_combined %>%
+  group_by(user_id) %>%
+  summarise(ceilingState = sum(ceilingState,na.rm=T)/n(),
+            floorState = sum(floorState, na.rm=T)/n(),
+            apathy=apathy[1]) %>% ungroup()
+
+# calc mean props 
+message(paste0("combined sample mean p(ceiling) state motivation = ", round(mean(propDist$ceilingState), 2)),
+        " +/- ", round(sd(propDist$ceilingState)/sqrt(nrow(propDist)), 2))
+
+message(paste0("combined sample mean p(floor) state motivation = ", round(mean(propDist$floorState), 2)),
+        " +/- ", round(sd(propDist$floorState)/sqrt(nrow(propDist)), 2))
+
+# are floor responses related to apathy? mean prop ~ apathy
+cor.test(propDist$floorState, propDist$apathy, method="spearman")
+
+# # fit a logistic model which is better place to directly answer this 
+# does apathy increase the likelihood of floor 
+log_floor = lme4::glmer(as.factor(floorState) ~ apathy + (1 | user_id), 
+                      data = data_combined, family = binomial, control = glmerControl(optimizer = "bobyqa"),
+                      nAGQ = 1)
+ 
+summary(log_floor)
+
+```
+
+# task completion
+
+```{r attrition_check, include=FALSE}
+# set minimum number of games as 50%
+minSess=0.5;
+# identify subjects who met this criterion in completion
+completion = data_combined %>%
+  filter(user_id %in% summaryComplete$user_id[summaryComplete$tGames >= max(summaryComplete$tGames)*minSess]) %>% 
+  group_by(user_id) %>%
+  summarise(nGames=sum(!is.na(DeltaEffortChosen))) # count the number of unique sessions
+
+# keep the same subjects only in long trial data 
+long_data = long_data %>% filter(user_id %in% completion$user_id)
+
+# histogram of completion
+pCompl=ggplot(completion) +
+  geom_histogram(aes(x=nGames)) +
+  labs(y="", x="valid games")+
+  theme_classic(base_size=32) + xlim(min(completion$nGames-0.2), max(completion$nGames+0.2))
+
+ggsave(filename=paste0(fig_dir, "valid_game_completion.png"), 
+       plot=pCompl,
+       height=20, width=20,
+       units="cm", bg="white")
+
+# histogram of completion
+pCompl_notifications=ggplot(summaryComplete) +
+  geom_histogram(aes(x=responses)) +
+  labs(y="N", x="completion rate (%)")+
+  theme_classic(base_size=32) + 
+  scale_x_continuous(limits=c(20.5,29.5), breaks=seq(21,29,1),
+                     labels=c("72","76","79","83","86","90","93","97","100")) 
+
+ggsave(filename=paste0(fig_dir, "valid_datapoint_completion.png"), 
+       plot=pCompl_notifications,
+       height=20, width=20,
+       units="cm", bg="white")
+
+## supplementary figure 2
+figure_S2 <- ggpubr::ggarrange(pCompl_notifications, pCompl, 
+                           labels = c("A", "B"),
+                           widths = c(1, 1),
+                           nrow=1,
+                           font.label = list(size = 32), label.x=-0.015) 
+
+ggsave(filename=paste0(fig_dir, "figure_S2.png"), 
+       plot=figure_S2,
+       height=40, width=40,
+       units="cm", bg="white")
+
+
+```
+
+# STATE ANALYSIS 
+## rm (within-person) corr
+  
+```{r, ema_data, fig.height=10, fig.width=10, echo=F, warning=F}
+
+predictors=c("Total", "Happy", "Tired", "Sleep")
+
+# use the rm corr package to calculate repeated measures correlations within subjects
+# (while preserving assumptioms)
+
+library(rmcorr)
+
+corWS=list(); # store the output in a list
+for(p in 2:length(predictors)){
+  
+  message('running within person corr Total motivation & ', predictors[p], '...')
+  # motivation with everything else
+corWS[[p-1]]=rmcorr("user_id", predictors[1], predictors[p], beh_data, CIs="bootstrap",
+            nreps = 100,bstrap.out = F)
+  
+}
+
+# within subject plot (motivation & happiness, example)
+wsCor1=ggplot2::ggplot(filter(beh_data, !is.na(Happy), !is.na(Total)), ggplot2::aes(x = Total, y = Happy, 
+                 group = factor(user_id), color = factor(user_id))) +
+      ggplot2::geom_jitter(ggplot2::aes(colour = factor(user_id), height=0.01, size=0.001), alpha=0.25, shape=20) +
+      ggplot2::geom_line(ggplot2::aes(y = corWS[[1]]$model$fitted.values), 
+                         linetype = 1, alpha=0.8) +   theme_classic(base_size=40) + 
+  theme(legend.position = "none") +
+  labs(x="Motivation", y="Happiness")
+
+# save it
+ggsave(filename=paste0(fig_dir, "within_person_state_corr_example.png"), 
+       plot=wsCor1,
+       height=20, width=20,
+       units="cm", bg="white")
+
+
+# report between person means in the corplot
+# calc mean and variability for the discvery and rep data 
+combined_base = beh_data %>% EMA_calc_mean(predictors) %>%
+  calc_variability(predictors, base_vars=NULL, log=T, entropy=F) 
+
+# run corr matrix 
+corBS = Hmisc::rcorr(as.matrix(combined_base[, paste0("m", predictors)]), type="spearman")
+# check assumptions (violated)
+shapiro.test(combined_base$mTotal)
+shapiro.test(combined_base$mHappy)
+shapiro.test(combined_base$mTired)
+shapiro.test(combined_base$mSleep)
+
+
+# plot corr matrix
+gCor1=ggcorrplot::ggcorrplot(corBS$r, type="lower", p.mat=corBS$P, sig.level = 0.05/6, 
+                 # (3+2+1) is a bonferroni adjustment
+           method='square', lab=T, show.diag=F,
+           digits=2, lab_size=6, insig="pch",pch.col="red", pch.cex=20, hc.order=T) + 
+  # relabel for prettiness
+  scale_x_discrete(labels=c("Sleep quality", "Motivation", "Happiness")) +
+  scale_y_discrete(labels = c("Fatigue", "Sleep quality", "Motivation")) +
+  labs(title="based on 15-day person mean states")  +
+  # rescale the colours:
+  scale_fill_gradient2(limit = c(-0.8,0.8), breaks=c(-0.8, -0.4, 0, 0.4, 0.8), 
+                       high = "#d6604d", low =  "#4393c3", 
+                       mid = "#f7f7f7",
+                       midpoint=0, name=expression(italic("rho"))) +
+  # adjust legend text sizes, axis text sizes and reduce margins
+    theme(axis.text.x = element_text(size=18, angle = 45, vjust = 0.5, hjust=0.5),
+          axis.text.y = element_text(size=18),
+          legend.key.size = unit(1, 'cm'), 
+          legend.key.height = unit(1, 'cm'), 
+          legend.key.width = unit(1, 'cm'), 
+          legend.title = element_text(size=18), 
+          legend.text = element_text(size=16),
+          plot.margin = margin(0.01,0.01,0.01,0.01, "cm")) 
+# also see it below
+gCor1 
+# save it
+ggsave(filename=paste0(fig_dir, "between_person_state_corrmatrix.png"), 
+       plot=gCor1,
+       height=20, width=20,
+       units="cm", bg="white")
+
+
+
+
+```
+
+
+
+## trajectories agaisnt days
+```{r, trajectories_days}
+# calculate subject mean state for each day 
+day_means = beh_data %>%
+  group_by(user_id, day) %>%
+  summarise(zTotal_m = mean(zTotal, na.rm=T),
+            zTotal_sem = sd(zTotal, na.rm=T)/sqrt(n()),
+            # use BA and SM later supplementary figure 5
+            zBA_m = mean(zBA, na.rm=T),
+            zSM_m = mean(zSM, na.rm=T),
+            zBA_sem = sd(zBA, na.rm=T)/sqrt(n()),
+            zSM_sem = sd(zSM, na.rm=T)/sqrt(n()),
+            weekday = as.factor(weekday[1])) %>% ungroup()
+
+
+# plot a trajectory with the two-weeks overlaid - larger version without group mean
+pTrajectoryM_overlay = day_means %>% group_by(user_id, weekday) %>%
+  summarise(zMeanState = mean(zTotal_m, na.rm=T)) %>% ungroup() %>%
+  # create a numeric vector for the weekdays (1=thurs as first day in the study; 7=weds)
+  mutate(d = as.numeric(weekday))%>%
+  ggplot(aes(x = d, y=zMeanState)) +
+  stat_summary_bin(aes(group=user_id, color=user_id),
+                   fun.data=mean_se, geom="point",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), 
+                   fun.data=mean_se, geom="line",size=0.7, alpha=0.4,
+                   position=position_dodge(width=0.1)) +
+  scale_color_gradient2(low="#004c6d", high="#5886a5")+
+  geom_hline(yintercept=0, linetype="dashed") +
+  labs(x="", 
+       y="State motivation") +
+   theme_classic(base_size=38) + 
+  scale_x_continuous(limits=c(0.75,7.25), breaks=seq(1,7,1), 
+                     labels=unique(day_means$weekday)) +
+  theme(axis.text.x = element_text(angle = 30, size=32), legend.position = "none") 
+
+# save it
+ggsave(filename=paste0(fig_dir, "trajectory_zState.png"), 
+       plot=pTrajectoryM_overlay,
+       height=30, width=25,
+       units="cm", bg="white")
+
+
+# overlay group mean version, with greyed out individuals 
+pTrajectoryM_overlayCol = day_means %>% group_by(user_id, weekday) %>%
+  summarise(zMeanState = mean(zTotal_m, na.rm=T)) %>% ungroup() %>%
+  # create a numeric vector for the weekdays (1=thurs as first day in the study; 7=weds)
+  mutate(d = as.numeric(weekday))%>%
+  ggplot(aes(x = d, y=zMeanState)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), color="darkgray",
+                   fun.data=mean_se, geom="point",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), color="darkgray",
+                   fun.data=mean_se, geom="line",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="errorbar",size=1.25, alpha=0.8) +
+  stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="line",size=1.25, alpha=0.8) +
+  labs(x="", 
+       y="State Motivation") +
+   theme_classic(base_size=24) + 
+  scale_x_continuous(limits=c(0.75,7.25), breaks=seq(1,7,1), 
+                     labels=unique(day_means$weekday)) +
+  ylim(-1.5, 1.5)+
+  theme(axis.text.x = element_text(angle = 30, size=18), legend.position = "none")
+
+# make a larger version for powerpoint presentations 
+pTrajectoryM_overlayCol2 = day_means %>% group_by(user_id, weekday) %>%
+  summarise(zMeanState = mean(zTotal_m, na.rm=T)) %>% ungroup() %>%
+  # create a numeric vector for the weekdays (1=thurs as first day in the study; 7=weds)
+  mutate(d = as.numeric(weekday))%>%
+  ggplot(aes(x = d, y=zMeanState)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), color="darkgray",
+                   fun.data=mean_se, geom="point",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), color="darkgray",
+                   fun.data=mean_se, geom="line",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="errorbar",size=1.25, alpha=0.8) +
+  stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="line",size=1.25, alpha=0.8) +
+  labs(x="weekday", 
+       y="State Motivation") +
+   theme_classic(base_size=38) + 
+  scale_x_continuous(limits=c(0.75,7.25), breaks=seq(1,7,1), 
+                     labels=unique(day_means$weekday)) +
+  ylim(-1.5, 1.5)+
+  theme(axis.text.x = element_text(angle = 30, size=32), legend.position = "none") 
+# save it
+ggsave(filename=paste0(fig_dir, "trajectory_means_zState.png"), 
+       plot=pTrajectoryM_overlayCol2,
+       height=30, width=30,
+       units="cm", bg="white")
+
+
+# run anova: is zTotal_m different on different days?
+anova_result <- aov(zTotal_m ~ weekday*as.factor(user_id), data = day_means)
+# Display ANOVA summary
+anova_table = eta2_effects(summary(anova_result))
+
+# for simpler reporting; divide the week into mon-weds and thurs to Sun
+# totally arbirtary !! if you want 2 halfs, thurs has to be either first or second part... 
+# my subjective intuition is thurs = second half... 
+
+week_means = day_means %>%
+  mutate(week_split = ifelse(weekday %in% c("Mon", "Tue", "Wed"),"Mon-Wed","Thurs-Sun"))
+
+# Subset data into paired vectors
+wk_summary = week_means %>% group_by(user_id, week_split) %>%
+  summarise(mean_state = mean(zTotal_m, na.rm=T),
+            se_state = sd(zTotal_m, na.rm=T)/sqrt(n()))
+# split them for paired t-test
+wk1 = filter(wk_summary, week_split=="Mon-Wed") %>% arrange(user_id); 
+wk2 = filter(wk_summary, week_split=="Thurs-Sun") %>% arrange(user_id)
+
+# run paired t test for the weekday split on STATE
+t.test(wk1$mean_state, wk2$mean_state, paired = TRUE, alternative = "two.sided")
+# get effect size
+# cohen's d 
+lsr::cohensD(wk1$mean_state, wk2$mean_state, 
+               method = "paired")
+message('state first vs. second part of week cohen d = ', 
+        round(lsr::cohensD(wk1$mean_state, wk2$mean_state, method = "paired"),2))
+
+# plot the paired relationship 
+pos <- position_dodge(width = 0.2)
+library(raincloudplots)
+# boxplot w/ rain plot
+pWK<- ggplot(wk_summary, aes(x = week_split, y = mean_state, fill = week_split),
+             show.legend=F) +
+  geom_flat_violin(position = position_nudge(x = .1, y = 0), adjust = 1.5, trim = FALSE, alpha = .6, colour = NA) +
+  geom_jitter(aes(colour = week_split),
+             position = position_jitter(width = .05), size = 2, shape = 20, alpha=0.8) +
+  geom_boxplot(outlier.shape = NA, alpha = .6, width = .1) +
+  geom_line(aes(group=user_id), linetype = 3, linewidth=0.25) +
+  scale_color_manual(values=c("#fcd8b3", "#fba834")) +
+  scale_fill_manual(values=c("#fcd8b3", "#fba834"))+ 
+  theme_classic(base_size=24) +
+  labs(y="State Motivation", x="") +
+  geom_signif(
+    comparisons = list(c("Mon-Wed", "Thurs-Sun")),
+    map_signif_level = TRUE, textsize = 14,     margin_top = 0.15,
+  ) + guides(fill = FALSE, colour = FALSE)  + 
+  scale_y_continuous(limits=c(-1,1), breaks=seq(-1,1,0.5), labels=c("-1", "-0.5", "0", "0.5", "1"))
+
+
+# a version of this plot which is bigger for presentations 
+pWK2=pWK + theme_classic(base_size=38)
+
+# save the figure separately 
+ggsave(filename=paste0(fig_dir, "pWK.png"), 
+       plot=pWK2,
+       height=25, width=25,
+       units="cm", bg="white")
+
+# get summary means
+summary_week = week_means %>% group_by(as.factor(week_split)) %>%
+  summarise(m_state = round(mean(zTotal_m, na.rm=T),2), 
+            se_state = round(sd(zTotal_m, na.rm=T)/sqrt(n()),2))
+```
+
+## trajectories: AM/PM
+check whether state differs for AM vs. PM
+```{r, morning_afternoon}
+AM_PM_means = beh_data %>%
+  group_by(user_id, daytime) %>%
+  summarise(zTotal_m = mean(zTotal, na.rm=T),
+            zTired_m = mean(zTired, na.rm=T),
+            zHappy_m = mean(zHappy, na.rm=T)) %>% ungroup()
+
+# get summary means
+summary_AM = AM_PM_means %>% group_by(daytime) %>%
+  summarise(m = round(mean(zTotal_m),2), se = round(sd(zTotal_m, na.rm=T)/sqrt(n()),2)) %>%
+  ungroup()
+
+
+# Subset data into paired vectors
+AM = filter(AM_PM_means, daytime=="AM") %>% arrange(user_id); PM = filter(AM_PM_means, daytime=="PM") %>% arrange(user_id)
+
+t.test(AM$zTotal_m, PM$zTotal_m, paired = TRUE, alternative = "two.sided")
+# cohen's d 
+message('difference AM vs. PM state motivation cohen d = ', round(lsr::cohensD(x=AM$zTotal_m, 
+               y=PM$zTotal_m, 
+               method = "paired"), 2))
+
+```
+
+
+
+
+
+# AR mE within day
+create lagged state (within a day only) to preserve assumptions of autocorrelation model (roughly even measurements)
+and test main effect of state autocorrelation and any modulation by trait-apathy (baseline, day0)
+```{r, AR_within_days}
+library(effects)
+# create a df with lagged state motivation within each day
+dataX = data_combined %>% 
+    group_by(user_id, day) %>%
+    mutate(zLTotal_day = lag(zTotal)) %>% ungroup()
+
+# no intercept, given this is not useful for centred data; random slopes only 
+mMElag_zTotal_wDay = lmerTest::lmer(zTotal~ zLTotal_day + zLTotal_day:apathy +
+                               (0+zLTotal_day|user_id),
+                             data=dataX, REML=F)
+# get summary and conf intervals
+summary(mMElag_zTotal_wDay)
+round(confint(mMElag_zTotal_wDay),2)
+
+# the strength of the slope is related to trait apathy
+# plot using help from package, effects for mixed models 
+# estimate the effects at levels of state and apathy
+ef1 <- effect(term="zLTotal_day*apathy", 
+              xlevels= list(apathy=c(-1, 1), # take examples as +1 and -1 sd
+                            zLTotal_day = c(-2, -1, 0, 1, 2)), mod=mMElag_zTotal_wDay) %>%
+  # convert to dataframe 
+  as.data.frame() %>%
+  mutate(apathy=as.factor(apathy))
+
+# plot the random slopes within day with effects overlay
+plot_ACF_combined_wD= ggplot()+
+  geom_smooth(data=dataX, aes(group=user_id, y=zTotal, x=zLTotal_day), 
+              alpha=0.1, size=0.4,
+              method="lm", se=F, color="lightgray")+
+  geom_point(data = ef1, aes(x = zLTotal_day, y = fit, color=apathy, group = apathy), size = 3) +
+  geom_line(data = ef1, aes(x = zLTotal_day, y = fit, color=apathy, group = apathy), size = 1.5) +
+  geom_errorbar(data = ef1, aes(x = zLTotal_day, ymin = fit - se, ymax = fit + se, color = apathy),
+             size=1.25, width=0, alpha=0.9) +
+  # geom_ribbon(data = ef1, aes(x = zLTotal, ymin = fit - se, ymax = fit + se, fill=apathy),
+  #             size=0.8, width=0.2, alpha=0.75) +
+  labs(y = "state later that day",
+       x = "state earlier that day", #color = "Trait Apathy",
+       color = "Trait apathy") +
+  scale_color_manual(values = c('#6489a5', '#004c6d'),
+                       labels = c("-1 SD", "+1 SD")) +
+    # scale_fill_manual(values = c('#9cc3dc', '#003f5c'),
+    #                   labels = c("-1.5 SD", "+1.5 SD")) +
+  theme_classic(base_size = 24) +
+  theme(legend.position=c(legend.position = c(.52, .9)),
+        legend.direction="horizontal",
+        legend.key.size = unit(0.5, 'cm'),
+        legend.key.height = unit(0.75, 'cm'),
+        legend.key.width = unit(0.75, 'cm'),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 16),
+        legend.background=element_blank()) +
+  scale_y_continuous(limits=c(-2.1,2.1), breaks=seq(-2,2,1)) +
+  scale_x_continuous(limits=c(-2.1,2.1), breaks=seq(-2,2,1)) 
+
+
+# save it
+ggsave(filename=paste0(fig_dir, "ACF_randomSlopes_trait_interaction_wD.png"), 
+       plot=plot_ACF_combined_wD,
+       height=25, width=25,
+       units="cm", bg="white")
+
+```
+
+
+
+
+# AR (summary stats)
+calculate autoregression estimates for each subject individually up to lag 4
+```{r, acf_ztotal_summary}
+# split the dataframe into n participants 
+data_split=split(beh_data, beh_data[,"user_id"])
+# summarise this in a dataframe
+acf_results <- lapply(data_split, function(sub_data) {
+  # behavioural
+  acf_result1 <- acf(sub_data$zTotal, lag.max = 4, na.action = na.pass, ci = 0, plot=F)$acf
+  
+  data.frame(Lags = seq(0,length(acf_result1)-1,1), 
+             acf = acf_result1
+             )
+})
+
+
+# Combining the results into a single dataframe
+acf_df <- do.call(rbind, Map(cbind, user_id = as.numeric(names(acf_results)), acf_results)) 
+
+t_test_acf = list(); significance = matrix(NA, max(acf_df$Lags))
+for (L in seq(1,4,1)){
+  # run independent t test on each lag & create a significance astericks for the plot
+  t_test_acf[[L]] = t.test(filter(acf_df, Lags==L)$acf)
+  if (t_test_acf[[L]]$p.value < 0.001){
+    significance[L]="***"
+  } else if(t_test_acf[[L]]$p.value < 0.01){
+    significance[L]="**"
+  }
+  else if(t_test_acf[[L]]$p.value < 0.05) {
+      significance[L]="*"
+  }
+  else{
+    significance[L] = ""
+  }
+  
+
+}
+
+pACF=acf_df %>%
+  # remove the lag 0 
+  filter(Lags %in% seq(1,4,1)) %>%
+  ggplot(aes(x=Lags, y=acf))+
+  geom_bar(stat="summary", alpha=0.3, width=0.4)+
+  #add distribution
+  ggdist::stat_halfeye(
+    width = .3, 
+    .width = 0, 
+    justification = -1, 
+    point_colour = NA, alpha=0.3) + 
+  theme_classic(base_size=24) +
+  geom_errorbar(stat="summary", width=0.2, alpha=0.8, size=0.5) +
+  geom_line(stat="summary", linewidth=1)+
+  geom_hline(yintercept=0, linetype="dashed") + 
+  # add sig manually based on t-test 
+  annotate("text", y = max(acf_df$acf)*0.6, x=seq(1,4,1)-0.05, label = significance, size=8) +
+  labs(x="lag", y="Motivation ACF") +
+  scale_x_continuous(breaks=seq(1,4,1)) 
+
+# save it
+ggsave(filename=paste0(fig_dir, "ACF_state.png"), 
+       plot=pACF,
+       height=20, width=20,
+       units="cm", bg="white")
+
+
+
+data_acf = acf_df %>% 
+  filter(Lags > 0) %>%
+  group_by(user_id) %>%
+  summarise(
+    ylag1 = acf[Lags==1]) %>% ungroup () %>% 
+  select(user_id, ylag1)
+
+# what's the relationship between y-delta and trait apathy
+
+# combine acf delta curves with traits
+data_acf = data_acf %>%
+  inner_join(filter(select(data_combined, all_of(c("user_id", "day", "apathy")))), 
+             by="user_id") %>% group_by(user_id) %>% 
+  slice(1) %>% ungroup()
+
+
+```
+
+
+
+# variance predict 
+an alternative is to calculate the mean squared successive differences
+and see if this is related to traits or demographic variables
+```{r, fig.height=5, fig.width=8}
+library(ggpubr)
+# create summary data for state motivation 
+combined_base = data_combined %>% 
+  # calculate mean & sd
+  EMA_calc_mean(c("Total", "zTotal"), expand_op=T) %>% 
+  # caclulate variability: MSSD, RMSSD
+  calc_variability(c("Total", "zTotal"), 
+                   base_vars=c("AES_Total", "apathy", "Age"), log=T,
+                   entropy=F) %>%
+  # normalise age between subjects
+  normalise_predictors(predictors=c("Age"), between=1, drop=F) %>%
+  # add sex 
+  inner_join(select(data_combined, c("user_id", "Sex")), by="user_id") %>%
+  # join with acf estimates
+  inner_join(select(data_acf, c("user_id", "ylag1")), by="user_id") %>% unique()
+
+
+
+# plot age. mean motivation
+age_mean = combined_base %>%
+  ggplot(aes(x=Age , y=mTotal)) +
+  #facet_wrap(~study)+
+  geom_point(size=4, aes(alpha=0.4)) + 
+  geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+    stat_cor(method = "pearson", label.x = max(combined_base$Age, na.rm=T)*0.5, 
+             label.y = max(combined_base$sdTotal, na.rm=T)*0.9,
+           label.sep='\n', cor.coef.name="r",
+           p.accuracy = 0.001, r.accuracy = 0.01, size=6) +
+  labs(x="Age", y="Motivation mean") +
+  theme_classic(base_size=24) + theme(legend.position="none") 
+
+# plot mean total motivation agaisnt trait-apathy
+State_mean = combined_base %>%
+  ggplot(aes(x=apathy , y=mTotal)) +
+  #facet_wrap(~study)+
+  geom_point(size=4, aes(alpha=0.8)) + 
+  geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+    stat_cor(method = "spearman", label.x = max(combined_base$apathy, na.rm=T)*0.5, 
+             label.y = max(combined_base$mTotal, na.rm=T)*0.925, size=6,
+           label.sep='\n', cor.coef.name="rho",
+           p.accuracy = 0.001, r.accuracy = 0.01) +
+  labs(x="Trait apathy", y="Motivation mean") +
+  theme_classic(base_size=24) + theme(legend.position="none") 
+
+# save a version of the state mean figure 
+ggsave(filename=paste0(fig_dir, "stateApathy_mean.png"), 
+       plot=State_mean + theme_classic(base_size=38) + theme(legend.position="none"),
+       height=25, width=25,
+       units="cm", bg="white")
+
+# plot sd total motivation & trait apathy
+State_sd = combined_base %>%
+  ggplot(aes(x=apathy , y=sdTotal)) +
+  #facet_wrap(~study)+
+  geom_point(size=4, aes(alpha=0.8)) + 
+  geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+  stat_cor(method = "spearman", label.x = max(combined_base$apathy, na.rm=T)*0.5, 
+             label.y = max(combined_base$sdTotal, na.rm=T)*0.925, size=6,
+           label.sep='\n', cor.coef.name="rho",
+           p.accuracy = 0.01, r.accuracy = 0.01) +
+  labs(x="Trait apathy", y="Motivation SD") +
+  theme_classic(base_size=24) + theme(legend.position="none") 
+
+# plot RMSSD total motivation & trait apathy
+State_RMSSD = combined_base %>%
+  ggplot(aes(x=apathy , y=Total_RMSSD)) +
+  #facet_wrap(~study)+
+  geom_point(size=4, aes(alpha=0.8)) + 
+  geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+    stat_cor(method = "spearman", label.x = max(combined_base$apathy, na.rm=T)*0.5, 
+             label.y = max(combined_base$Total_RMSSD, na.rm=T)*0.9, size=6,
+           label.sep='\n', cor.coef.name="rho",
+           p.accuracy = 0.01, r.accuracy = 0.01) +
+  labs(x="Trait apathy", y="Motivation RMSSD") +
+  theme_classic(base_size=24) + theme(legend.position="none") 
+
+```
+
+# GLM predicting state feature
+```{r, GLM_trait_state}
+# z-score between subjects
+state_features=c("mTotal", "sdTotal", "Total_RMSSD")
+
+res.StateFeatures=glm_base(combined_base, 
+                           y=state_features,
+                           x=c("apathy", "zAge", "Sex"))
+
+# see results by printing summary
+summary(res.StateFeatures$mTotal)
+summary(res.StateFeatures$sdTotal)
+
+confint(res.StateFeatures$mTotal)
+# check if mean state correlates with variance
+res.mean = glm_base(combined_base, y=c("sdTotal", "Total_RMSSD", "ylag1"),
+                    x=c("mTotal"))
+
+# no 
+summary(res.mean[[1]])
+```
+
+
+# TASK ANALYSIS 
+# success rate: 
+success is stable near 100% throughout both studies (good!)
+
+```{r, success, echo=FALSE, fig.height=4, fig.width=10, warning=F}
+pf_1=long_data %>% 
+  group_by(sess) %>% 
+  summarise(trialSuccess_prop = sum(trialSuccess/n())*100) %>% ungroup() %>%
+  ggplot(aes(x=factor(sess), y=trialSuccess_prop, group=as.factor(sess)))+
+  geom_bar(stat="identity", alpha=0.3) + ylab("success ± sem (mean %)")+ xlab("day")+
+  geom_jitter()+
+  theme_classic(base_size=20) + 
+  theme(legend.position="none") + 
+  geom_errorbar(aes(ymin = trialSuccess_prop-sd(trialSuccess_prop), ymax = trialSuccess_prop+sd(trialSuccess_prop)), width=0.3, size=1, alpha=0.5) +
+  scale_y_continuous(limits=c(80,100), oob=scales::rescale_none)+
+  scale_x_discrete(labels=c("D0", "D2", "D4", "D6", "D8", "D10", "D12", "D14"))
+
+# normality check: 
+success=long_data %>%
+  group_by(user_id, sess) %>%
+  summarise(trialSuccess_prop = sum(trialSuccess/n()),
+            failed_trials = sum(trialSuccess==0)) %>%
+  ungroup() %>% mutate(user_id = as.factor(user_id), 
+                       sess = as.factor(sess),
+                       fail_rank = rank(failed_trials),
+                       PSuccess_rank = rank(trialSuccess_prop),
+                       PSuccess_log10 = 1/trialSuccess_prop) %>% ungroup()
+# normality check
+shapiro.test(success$fail_rank)
+# the success rate data are very clearly not normal since almost all values are 1 
+kruskal.test(trialSuccess_prop~as.factor(sess), data=success)
+# fit a binomial glm for the proportional data 
+success_rate_model <- glm(trialSuccess ~ as.numeric(sess),  
+                          # use numeric session to obtain a single beta ^
+                          family = binomial, data = long_data)
+
+summary(success_rate_model)
+
+# summarise over al sessions for simplicity 
+summarySuccess=long_data %>% 
+  group_by(subID, day) %>%
+  summarise(trialSuccess_prop = mean(trialSuccess),
+            trialSuccess_propSEM = sd(trialSuccess)/sqrt(n())) %>% ungroup() 
+
+message('mu mean +/- sem success overall = ', round(mean(summarySuccess$trialSuccess_prop),2), "/", round(mean(summarySuccess$trialSuccess_propSEM),2))
+
+# plot success rate, with session (day) indicator
+pSuccessR_sess = summarySuccess %>%
+  ggplot(aes(x=1, y=trialSuccess_prop))+
+  geom_flat_violin(position = position_nudge(x = .1, y = 0), adjust = 1.5, trim = FALSE, alpha = .1, aes(group=as.factor(day),
+             color=as.factor(day), fill=as.factor(day))) +
+  geom_point(aes(color=as.factor(day), fill=as.factor(day)),
+             position = position_jitter(width = .05), size = 2, shape = 20, alpha=0.5) +  theme_classic(base_size=24) +
+  scale_colour_brewer(type = "seq") +
+  scale_fill_brewer(type="seq") +
+  #guides(fill="Day", color=F) + 
+  labs(x= "", y="P(success)", fill="Day", color="Day")+ 
+  theme(legend.position=c(0.6, 0.5),
+        legend.title = element_text(size=18),
+        legend.text = element_text(size=18),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()) +
+    scale_y_continuous(breaks=c(0.6, 0.7, 0.8, 0.9, 1), limits=c(0.6,1), 
+                     labels=c("0.6", "0.7", "0.8", "0.9", "1"))
+
+
+```
+
+# ceiling behaviour
+
+```{r, ceiling, echo=FALSE, fig.height=4, fig.width=10, warning=F}
+# summarise 
+choice_summary = long_data %>%
+  group_by(subID, sess) %>%
+  summarise(day=day[1],
+            nTrials = n(),
+            timeOnTask = round((trialStartTime[nTrials]-trialStartTime[1])/60000, 1),
+            failedTrials = sum(trialSuccess==0), 
+            propLeft = round(sum(choice=="route 1")/(nTrials[1]), 2),           
+            propHigherEff = mean(higherEffChosen),
+            seHigherEffChosen=sd(higherEffChosen)/sqrt(n()),
+            mDeltaEffortChosen = mean(deltaEffortSigned)) %>% ungroup() %>%
+  mutate(ceiling=case_when(propHigherEff>=1 ~ 1, TRUE ~ 0),
+         # try transform the data to normal
+         pHigherEff_transform = sqrt(max(propHigherEff+1) - propHigherEff)) 
+
+
+pc1 = choice_summary %>% 
+  group_by(sess) %>%
+  summarise(mHigherEff = mean(propHigherEff),
+            meanSEMHigherEff=mean(seHigherEffChosen))%>%
+  ggplot(aes(x=factor(sess), y=mHigherEff))+
+  geom_bar(stat="identity", alpha=0.3) + 
+  ylab("prop higher effort")+ xlab("day")+
+  theme_classic(base_size=20) + 
+  theme(legend.position="none", axis.text.x = element_text(angle = 45)) + 
+  geom_errorbar(aes(ymin = mHigherEff-meanSEMHigherEff, ymax = mHigherEff+meanSEMHigherEff), width=0.3, size=1, alpha=0.5) +
+  scale_y_continuous(limits=c(0,1), oob=scales::rescale_none) +
+    scale_x_discrete(labels=c("D0", "D2", "D4", 
+                            "D6", "D8", "D10", "D12", "D14")) 
+
+# chheck normality: not normal at all, use KW again
+shapiro.test(choice_summary$propHigherEff)
+# check whether the rank data is 
+shapiro.test(choice_summary$pHigherEff_transform)
+
+# cannot be transformed to normal, confirm with one way anova
+kruskal.test(propHigherEff~as.factor(sess), data=choice_summary)
+
+
+```
+
+
+
+# plot choice props
+```{r}
+# get the correlation between deltaEffort and deltaReward
+# Get unique pairs of deltaEffort and deltaReward
+unique_pairs <- unique(long_data[, c("deltaEffort", "deltaReward")])
+
+# Compute Spearman's correlation for unique pairs
+
+# Compute Spearman's correlation for unique pairs
+shapiro.test(unique_pairs$deltaEffort)
+shapiro.test(unique_pairs$deltaReward)
+cor.test(unique_pairs$deltaEffort, unique_pairs$deltaReward, method = "spearman")
+
+# color blind palette
+cbp2 <- c("#000000", "#E69F00", "#56B4E9", "#009E73",
+          "#F0E442", "#0072B2", "#D55E00", "#CC79A7")
+
+# summarise the data by session over all trials
+summaryChoice = long_data %>%
+  mutate(deltaEffort = abs(trialEffortPropMax1-trialEffortPropMax2)*100,
+         deltaEffortB = as.factor(ifelse(deltaEffort<=20,"+20%",
+                               ifelse(deltaEffort<=40,"+40%", "+60%"))),
+         deltaReward = as.factor(abs(trialReward1-trialReward2))) %>%
+  group_by(sess, deltaReward, deltaEffortB) %>%
+  summarise(mean_Peffort = mean(higherEffChosen, na.rm=T),
+            mean_choice = mean(deltaEffortSigned, na.rm=T)*100)  %>% ungroup() %>%
+  rstatix::convert_as_factor(sess) %>%
+  mutate(Peffort_transform = mean_Peffort^2,
+    mean_Peffort_rank = rank(mean_Peffort^2)) %>% ungroup()
+
+# check duplicate 
+shapiro.test(summaryChoice$mean_Peffort_rank)
+
+# check anova assumptions 
+# ANOVA procedure on rank-transformed 
+aov.rnk <- aov(mean_Peffort_rank~ deltaReward * deltaEffortB + sess, data = filter(summaryChoice, deltaReward!=0))
+# get anova table with eta2 effect sizes
+anova_table = eta2_effects(summary(aov.rnk))
+# Print the results
+print(anova_table)
+# check normality of residuals 
+qqnorm(aov.rnk$residuals)
+# qq plot looks ok 
+
+# plot summary
+pChoiceFunc=summaryChoice %>% filter(!deltaReward==0) %>%
+  ggplot(aes(x=as.factor(deltaEffortB), y=mean_Peffort, 
+             colour=deltaReward, fill=deltaReward,
+             group=deltaReward)) +
+  stat_summary(fun=mean, geom="line", size=1, alpha=0.7) +
+  stat_summary(fun.data=mean_se, geom="errorbar", width = 0.3, size=2, alpha=0.7) +
+  geom_jitter(width=0.1, size=8, shape=20, alpha=0.4, show.legend = F)+
+  ylab("P(higher effort)") + xlab("\U0394 effort") +
+  labs(color="\U0394 reward", fill="\U0394 reward")+
+  theme_classic(base_size=36) + theme(legend.position="right") +
+  scale_color_manual(values=cbp2[6:9], labels=c("+1", "+2", "+3")) + scale_size(range = c(0.8, 2.4)) +
+  scale_fill_manual(values=cbp2[6:9], labels=c("+1", "+2", "+3")) + 
+  # change legend features
+  theme(legend.position=c(0.1, 0.125),
+          legend.key.size = unit(1.5, 'cm'), 
+          legend.key.height = unit(1.5, 'cm'), 
+          legend.key.width = unit(1.5, 'cm'), 
+          legend.title = element_text(size=30), 
+          legend.text = element_text(size=30),
+        legend.background=element_blank()) +
+    scale_y_continuous(breaks=c(0.6, 0.7, 0.8, 0.9, 1), limits=c(0.6,1), 
+                     labels=c("0.6", "0.7", "0.8", "0.9", "1"))
+
+# save it
+ggsave(filename=paste0(fig_dir, "choiceProp_rewardeffort.png"), 
+       height=20, width=20,
+       units="cm", bg="white")
+
+```
+
+
+
+# calibration
+the initial calibraiton set at baseline is a strong positive predictor of the estimated threshold (pressCount/pressTime)*10 sec
+
+```{r, calibration, fig.height=6, fig.width=8, echo=FALSE, warning=F}
+# calculate estimated threshold based on count / time as a proportion of the total time
+long_data=mutate(long_data, estimatedThreshold = (pressCount/pressTimesTot)*10000)
+# handle inf values as NaN if e.g., pressCount was zero
+long_data$estimatedThreshold[is.infinite(long_data$estimatedThreshold)]=NaN
+
+# summarise the calibration data for each subject, 
+calib_long = long_data %>%
+  # filter for only the other sessions after baseline
+  filter(day > 0 ) %>%
+  group_by(user_id) %>% 
+  summarise(mean_estimated_threshold = mean(estimatedThreshold, na.rm=T),
+            sd_estimated_threshold = sd(estimatedThreshold, na.rm=T),
+            sem_estimated_threshold = sd(estimatedThreshold, na.rm=T)/sqrt(n()),
+            initial_threshold=max(thresholdMax)) %>% ungroup() %>%
+  mutate(
+    # normalise values between 0 and 100 for ease of interpretation
+    zmean_estimated_threshold = (mean_estimated_threshold - min(mean_estimated_threshold)) /
+              (max(mean_estimated_threshold) - min(mean_estimated_threshold)) * 100,
+    zinitial_threshold = (initial_threshold - min(initial_threshold)) /
+      (max(initial_threshold) - min(initial_threshold)) * 100)
+
+library(ggpubr)
+# correlation
+cor.test(calib_long$zmean_estimated_threshold, calib_long$zinitial_threshold)
+
+# plot the overall relationship 
+pCalib = calib_long %>%
+  ggplot(aes(y=zmean_estimated_threshold, x=zinitial_threshold)) +
+  #facet_wrap(~study)+
+  stat_smooth(method="lm", alpha=0.2, se=T, fullrange=T, color="#6fa1c5", fill="#6fa1c5") + 
+  geom_point(alpha=0.8, size=3, shape=1, fill="gray", color="black")+
+  geom_abline(slope = 1, linetype="dashed", colour="black") +
+  stat_cor(method = "pearson", label.x = max(calib_long$zinitial_threshold*0.5), 
+           label.y = 1.5,
+           label.sep='\n', cor.coef.name="r",
+           p.accuracy = 0.001, r.accuracy = 0.01, size=7) +
+  labs(y="follow-up max effort (%)", x="initial max effort (%)") +
+  theme_classic(base_size=24) +
+  ylim(0,100) + xlim(0,100)
+
+# save it
+ggsave(filename=paste0(fig_dir, "effort_calibration_mean_normalised.png"), 
+       plot=pCalib,
+       height=20, width=20,
+       units="cm", bg="white")
+
+
+# calculate proportion of trials which exceeded threshold, with some offset to allow 
+# for "ensuring" getting enough presses in 
+exceeded = calcThresholdExceeded(long_data,secOffset=1)
+```
+
+
+
+# test re-test reliability: ICC is moderate-strong for choices and vigour
+
+```{r, icc, echo=F, warning=F}
+summary=long_data %>%
+  group_by(user_id, sess) %>%
+  summarise(day = day[1], # add day indicator
+            mEstThreshold = mean(estimatedThreshold, na.rm=T),
+            mHigherEff = mean(higherEffChosen, na.rm=T),
+            rank_mHigherEff = rank(mHigherEff),
+            mPressLag = mean(meanPressLag, na.rm=T),
+            mChoiceRt = mean(choiceRT),
+            mDeltaEffortChosen = mean(deltaEffortSigned),
+            sdDeltaEffortChosen = sd(deltaEffortSigned),
+            semDeltaEffortChosen = sdDeltaEffortChosen/sqrt(n())) %>%
+  ungroup()
+
+# anova on choice probability
+# confirm with w/s two-way anova
+
+
+# ICC mean level
+vars = c('mHigherEff', 'mDeltaEffortChosen', 'mChoiceRt', 'mEstThreshold')
+icc_means<-get_icc(summary, vars) %>%
+  dplyr::rename("choices (day mean)" = mDeltaEffortChosen,
+                "choice RT (day mean)" = mChoiceRt, 
+                "estimated max effort (day mean)" = mEstThreshold)
+
+icc = cbind(icc_means)
+#tabulate:
+t(icc) %>%
+  kbl(caption = "ICC: proportion of between-person variance", html_font = "Cambria") %>%
+  kable_styling(bootstrap_options = "striped", position = "left")
+
+# calculate on just game 1-2 (~48 hours)
+icc_2game_choice = list(); icc_2game_vigour = list(); icc_2game_maxEffort=list();
+
+# Generate all possible combinations sessions
+all_combinations <- combn(1:8, 2)
+
+for (comb in seq(all_combinations[1,])){
+  
+  # choices:
+  icc_2game_choice[[comb]]<-get_icc(filter(summary, sess %in% c(all_combinations[1,comb],
+                                                         all_combinations[2,comb])),
+                             c("mHigherEff")) 
+  
+  # press lag
+  icc_2game_vigour[[comb]]<-get_icc(filter(summary, sess %in% c(all_combinations[1,comb],
+                                                         all_combinations[2,comb])),
+                             c("mPressLag")) 
+  
+  # maximum effort
+  icc_2game_maxEffort[[comb]]<-get_icc(filter(summary, sess %in% c(all_combinations[1,comb],
+                                                         all_combinations[2,comb])),
+                             c("mEstThreshold")) 
+
+
+}
+
+# Combine the ICC values into a data frame
+icc_df = as.data.frame(unlist(icc_2game_choice)) %>%
+  mutate(game1 = all_combinations[1,],
+         game2 = all_combinations[2,]) %>% dplyr::rename("choice"=1) %>%
+  # add vibour estimates
+  inner_join(as.data.frame(unlist(icc_2game_vigour)) %>%
+               mutate(game1 = all_combinations[1,],
+                      game2 = all_combinations[2,]) %>% dplyr::rename("vigour"=1),
+             by=c("game1", "game2")) %>%
+  pivot_longer(cols=c(1,4), names_to="behaviour", values_to="icc") %>% mutate(behaviour = as.factor(behaviour)) %>% ungroup()
+
+# Group by combinations and calculate mean and confidence interval
+icc_summary <- icc_df %>%
+  group_by(behaviour) %>%
+  summarise(n= n(),
+            mean_icc = round(mean(icc),2),
+            sem_icc = round(sd(icc)/sqrt(n),2),
+            ci_lower = round(mean_icc - 1.96 * sd(icc) / sqrt(n),2),
+            ci_upper = round(mean_icc + 1.96 * sd(icc) / sqrt(n),2)) %>% ungroup()
+
+# Print or use icc_summary as needed
+print(icc_summary) 
+
+
+# calculate ICC on only game 1 vs game 8
+icc_mean_2weeks <-get_icc(filter(summary, sess %in% c(1,8)),
+                          c("mDeltaEffortChosen", "mPressLag", "mEstThreshold"))
+
+print(icc_mean_2weeks) 
+
+
+```
+
+
+# test retest plot
+```{r, test_retest_plot}
+
+# calculate test retest summaries for example days 0 (baseline), 2 and 14 
+summaryTRT=summary %>%
+  filter(day %in% c(0,2,14)) %>% select(c("user_id", "day", "mHigherEff", "mPressLag")) %>%
+  pivot_wider(id_cols="user_id", names_from="day", values_from = c("mHigherEff", "mPressLag"))
+
+# scatter plot
+# plot icc values 
+pTRChoice_icc = ggplot(filter(icc_df, behaviour=="choice"), aes(x = as.factor(behaviour), y = icc)) +
+  geom_boxplot(outlier.shape = NA, alpha = .5, width = .1) +
+  geom_jitter(width=0.3, alpha=0.4, shape=20, size=6)+
+  theme_classic(base_size=24) + theme(axis.text.x=element_blank(), axis.ticks.x = element_blank(),
+                                      legend.position="none", 
+                                      )+
+  labs(y="ICC", x="") + 
+  scale_y_continuous(breaks=c(0.5, 0.75, 1), limits=c(0.5,1), 
+                     labels=c("0.5", "0.75", "1"))
+
+# with vigour too
+pTR0_icc = ggplot(icc_df, aes(x = as.factor(behaviour), fill=as.factor(behaviour), 
+                              y = icc)) +
+  geom_boxplot(outlier.shape = NA, alpha = .5, width = .1) +
+  geom_jitter(aes(color=as.factor(behaviour)), width=0.2, alpha=0.5, shape=20, size=4)+
+  scale_fill_manual(values=c("#004c6d",
+                              "#6fa1c5")) +
+    scale_color_manual(values=c("#004c6d",
+                              "#6fa1c5")) +
+  theme_classic(base_size=24) + theme(axis.text.x=element_text(angle=-30))+
+  labs(y="ICC", x="") + 
+  scale_x_discrete(limits=c("vigour", "choice"), 
+                   labels=c("vigour", "choices")) + theme(legend.position="none") +
+  scale_y_continuous(breaks=c(0.5, 0.75, 1), limits=c(0.5,1), 
+                     labels=c("0.5", "0.75", "1"))
+
+# plot baseline vs. day 2
+pTR1 = ggplot(summaryTRT, aes(x=mHigherEff_0, y=mHigherEff_2))+
+  geom_jitter(size=3, aes(alpha=0.5), shape=1, width=0.025, height=0.025) + 
+  geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+  labs(x="Baseline", y="Day 2") +
+  theme_classic(base_size=24) + theme(legend.position="none") +
+  scale_x_continuous(breaks=c(0, 0.5, 1), limits=c(0,1), 
+                     labels=c("0", "0.5", "1")) + 
+  scale_y_continuous(breaks=c(0,0.5, 1),limits=c(0,1),labels=c("0", "0.5", "1"))  
+
+# plot baseline vs. day 14
+pTR2 = ggplot(summaryTRT, aes(x=mHigherEff_0, y=mHigherEff_14))+
+  geom_jitter(size=3, aes(alpha=0.5), shape=1, width=0.025, height=0.025) + 
+  geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+  labs(x="Baseline", y="Day 14") +
+  theme_classic(base_size=24) + theme(legend.position="none") +
+  scale_x_continuous(breaks=c(0, 0.5, 1), limits=c(0,1),
+                     labels=c("0", "0.5", "1")) + 
+  scale_y_continuous(breaks=c(0,0.5, 1), limits=c(0,1),labels=c("0", "0.5", "1"))  
+
+# plot dau 2 vs. day 14
+pTR3 = ggplot(summaryTRT, aes(x=mHigherEff_2, y=mHigherEff_14))+
+  geom_jitter(size=3, aes(alpha=0.5), shape=1, width=0.025, height=0.025) + 
+  geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+  labs(x="Day 2", y="Day 14") +
+  theme_classic(base_size=24) + theme(legend.position="none") +
+  scale_x_continuous(breaks=c(0, 0.5, 1), limits=c(0,1),
+                     labels=c("0", "0.5", "1")) + 
+  scale_y_continuous(breaks=c(0,0.5, 1), limits=c(0,1),labels=c("0", "0.5", "1"))  
+
+```
+
+
+
+
+# lme choice ~ state * trait
+
+```{r, mixed_effect_state_trait_choice}
+# for the beh analysis, criterion for minimum games was 50%
+# 
+data_beh = data_combined %>%
+  filter(user_id %in% completion$user_id)
+
+# save beh data with apathy-CFA for later use
+write.csv(data_beh, file=paste0(task_data_dir, "csv/behavioural_data_CFA_anon.csv"))
+
+# linear model (no hierarchy)
+lm = lm(DeltaEffortChosen~ zTotal*apathy +  zAge + Sex, data=data_beh)
+
+# run the mixed effect model (random intercept) with apathy factor scores 
+mME = lmerTest::lmer(DeltaEffortChosen~ zTotal*apathy +  zAge + Sex + (1|user_id),
+                           data=data_beh, REML=F)
+
+# random slope model slope model
+mME_rs1 = lmerTest::lmer(DeltaEffortChosen~ zTotal*apathy +  zAge + Sex + (1+zTotal|user_id),
+                         data=data_beh, REML=F)
+
+
+# get the confidence intervals for age and ses only for reporting
+round(fixef(mME_rs1), 2)
+round(confint(mME_rs1, parm=c("zAge", "SexMale")), 2)
+
+
+summary(mME_rs1)
+
+# given that age and Sex are not important remove them from the final model
+mME_rs0 = lmerTest::lmer(DeltaEffortChosen~ zTotal*apathy + (1|user_id),data=data_beh, REML=F)
+
+mME_rs = lmerTest::lmer(DeltaEffortChosen~ zTotal*apathy + (1+zTotal|user_id),data=data_beh, REML=F)
+
+# compare to simple lm
+anova(mME_rs, lm)
+# compare to random intercept only
+anova(mME_rs0, mME_rs)
+
+# get summary of best model without age and sex
+summary(mME_rs)
+# get BF
+performance::test_performance(lm, mME_rs0, mME_rs, verbose=T)
+
+performance::model_performance(mME_rs)
+
+# get the confidence intervals 
+round(fixef(mME_rs, parm=c("zTotal", "apathy", "zTotal:apathy")), 2)
+round(confint(mME_rs, parm=c("zTotal", "apathy", "zTotal:apathy")), 2)
+
+# correlation of the random effects 
+summary(mME_rs)$varcor
+
+```
+
+
+# logistic model 
+run the same model on trial level probability of making choice 
+not reported in results (shows the same thing)
+```{r, mixed_logistic_model}
+# # bind the states motivation with long data 
+long_data_EMA = inner_join(long_data, select(data_combined, 
+                                             all_of(c("user_id", "sess", "zTotal", "apathy", "zAge", "Sex"))),
+                            by=c("user_id", "sess")) %>%
+     filter(user_id %in% summaryComplete$user_id[summaryComplete$tGames >=minSess]) 
+
+# # fit the logistic version 
+log_ME = lme4::glmer(as.factor(higherEffChosen) ~ zTotal*apathy + (1 | user_id), 
+                      data = long_data_EMA, family = binomial, control = glmerControl(optimizer = "bobyqa"),
+                      nAGQ = 1)
+ 
+summary(log_ME)
+
+# Extract the fixed effects coefficients
+coef_summary <- summary(log_ME)$coefficients
+
+# Calculate odds ratios and their confidence intervals
+odds_ratios <- exp(coef_summary[, "Estimate"])
+p_val = coef_summary[, "Pr(>|z|)"]
+
+# Predict probabilities over the range of zTotal
+zTotal_range <- seq(min(long_data_EMA$zTotal), max(long_data_EMA$zTotal), length.out = 100)
+apathy_levels <- unique(long_data_EMA$apathy)
+
+
+# Bin the zTotal values and calculate the proportion of higherEffChosen in each bin
+binned_data <- long_data_EMA %>%
+  mutate(zTotal_bin = cut(zTotal, breaks = 5)) %>% group_by(zTotal_bin) %>%
+  summarise(prop_higherEffChosen = mean(higherEffChosen, na.rm = TRUE),
+            sem_higherEffChosen = sd(higherEffChosen, na.rm=T)/sqrt(n())) %>% ungroup()
+
+# Plot the summarized data with the predicted probabilities
+ggplot(binned_data, aes(x = zTotal_bin, y = prop_higherEffChosen)) +
+  geom_point(size = 3, color = "blue") +
+  geom_errorbar(aes(ymin = prop_higherEffChosen - sem_higherEffChosen, 
+                    ymax = prop_higherEffChosen + sem_higherEffChosen), 
+                width = 0.2, color = "blue") +
+  geom_line(aes(group = 1), color = "blue", size = 1) +
+  labs(
+    x = "State motivation",
+    y = "P(higher effort)",
+    title="Effect of state on P(higher effort)"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  annotate(geom="text",
+           x = 1.5, y=0.85, 
+           label=sprintf('Odds ratio = %.2g \n p < 0.001', odds_ratios[2]), size=6)
+
+
+
+```
+
+# model checks (linear models)
+```{r, model_checks}
+library(flextable)
+performance::model_performance(mME_rs)
+compModels=performance::compare_performance(lm, mME,mME_rs0, mME_rs, verbose = FALSE) %>%
+  mutate(reference = as.integer(seq(1,4,1)),
+        formula=c("choice ~ state*trait + Age + Sex", 
+                   "choice ~ state*trait + Age + Sex + (1|i)",
+                   "choice ~ state*trait + (1|i)",
+                   "choice ~ state*trait + (1+state|i)"))
+
+ftmEcomp=flextable(compModels,
+               col_keys = c("reference", "AIC", "BIC", "RMSE","formula"))%>%
+  set_table_properties(layout = "autofit") %>%
+  width(j=c("AIC", "BIC"), width=c(1.8,1.8)) %>%
+  set_caption( 
+    caption = as_paragraph("Behavioural model comparison"), 
+    style = "Table Caption") %>%
+  # adjust column labels
+  set_header_labels("reference" = "model", "R2_conditional"="R2(cond)", 
+                    "R2_marginal"="R2(marginal)")
+
+# hacky way to get the plot to look right
+model1=lm; model2=mME; model3=mME_rs0; model4=mME_rs;
+compPlot=plot(performance::compare_performance(model1, model2, model3, model4,
+                                               rank = TRUE, verbose = F), 
+              legend.cex=0.1)
+
+
+
+```
+
+
+# random effects
+```{r, random_effects}
+
+# link between apathy nd random intercept; should be strong and negative 
+
+Cond_DF2 <- as.data.frame(ranef(mME_rs)) 
+  
+# extract random effects 
+re = ranef(mME_rs)$user_id 
+re <- re %>%
+  tibble::rownames_to_column(var="user_id") %>%
+  mutate(user_id = as.numeric(user_id))  %>%
+  dplyr::rename("Intercept"="(Intercept)", 
+                "state" = "zTotal") %>%
+  dplyr::inner_join(apathyCheck, by="user_id")
+
+
+# plot correlation 
+int_apathy = re %>%
+  ggplot(aes(x=apathy , y=Intercept)) +
+  geom_point(size=4, aes(alpha=0.8)) + 
+  #geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+  stat_cor(method = "spearman", label.x = max(re$apathy, na.rm=T)*0.5, 
+             label.y = max(re$Intercept, na.rm=T)*0.925, size=6,
+           label.sep='\n', cor.coef.name="rho",
+           p.accuracy = 0.001, r.accuracy = 0.01) +
+  labs(x="Trait apathy", y="choice intercept") +
+  theme_classic(base_size=24) + theme(legend.position="none") 
+
+# save a version of the state mean figure 
+ggsave(filename=paste0(fig_dir, "RE_int_apathy.png"), 
+       height=25, width=25,
+       units="cm", bg="white")
+
+
+# plot correlation 
+slope_apathy = re %>%
+  ggplot(aes(x=apathy , y=state)) +
+  geom_point(size=4, aes(alpha=0.8)) + 
+  #geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+  stat_cor(method = "spearman", label.x = max(re$apathy, na.rm=T)*0.5, 
+             label.y = max(re$state, na.rm=T)*0.925, size=6,
+           label.sep='\n', cor.coef.name="rho",
+           p.accuracy = 0.001, r.accuracy = 0.01) +
+  labs(x="Trait apathy", y="state-choice slope") +
+  theme_classic(base_size=24) + theme(legend.position="none") 
+
+# save a version of the state mean figure 
+ggsave(filename=paste0(fig_dir, "RE_slope_apathy.png"), 
+       height=25, width=25,
+       units="cm", bg="white")
+
+```
+
+
+# practice effects
+following Schurr et al., 2023 (Nature Human Beh), fit a power law curve to the data to test the existence of practice effects 
+
+```{r, practice_effects}
+
+# loop each subject and get the practice and state effects 
+data_beh = normalise_predictors(data_beh, c("DeltaEffortChosen", "sess"), between=1) # create a normalised session value
+
+
+data_split=split(data_beh, data_beh$user_id)
+# Create an empty dataframe to store betas
+beta_df <- data.frame(); t_tests = list(); vif_df <- data.frame();
+# Initialize vectors to store R-squared values
+r2_practiceOnly <- numeric(length(data_split))
+r2_practiceState <- numeric(length(data_split))
+# Initialize vectors to store coefficients for each subject
+beta_0 <- numeric(length(data_split))
+beta_1 <- numeric(length(data_split))
+
+for (sub in seq(data_split)){
+  # add 10 to prevent log(0)
+  # fit a base practice model only 
+  lm_practiceOnly = lm(log(10+zDeltaEffortChosen) ~ log(10+zsess),
+                          data=filter(data_split[[sub]], !is.na(sess)), na.action="na.exclude")
+  # coefficients from the power-law only model
+  beta_0[sub] <- coef(lm_practiceOnly)[1]
+  beta_1[sub] <- coef(lm_practiceOnly)[2]
+  
+  # add state predictor
+  lm_practice = lm(log(10+zDeltaEffortChosen) ~ log(10+zsess) + log(10+zTotal), 
+                          data=filter(data_split[[sub]], !is.na(sess)), na.action="na.exclude")
+  
+    # Extract coefficients (betas) and add to the dataframe
+  coefficients <- cbind(t(as.data.frame(coef(lm_practice))), data_split[[sub]]$user_id[1])
+  #rownames(coefficients) <- NULL
+  beta_df[sub, 1:4] = coefficients
+  
+  # Extract R-squared values
+  r2_practiceOnly[sub] <- summary(lm_practiceOnly)$r.squared
+  r2_practiceState[sub] <- summary(lm_practice)$r.squared
+  # adjusted 
+  
+
+}
+# concatenate the r2 values and get summary statistics
+r2_values = cbind(r2_practiceOnly, r2_practiceState)
+# # Calculate mean R-squared values for each model
+mean_r2 = apply(r2_values,2,mean, na.rm=T) 
+# Calculate standard error of the mean for R-squared
+nObs = nrow(r2_values)
+sd_r2 = apply(r2_values,2,sd, na.rm=T)
+# get sem as sd / sqrt(nObs)
+sem_r2 <- sd_r2 / sqrt(nObs)
+# Calculate confidence interval for R-squared (assuming normal distribution)
+ci_lower <- mean_r2 - 1.96 * sem_r2
+ci_upper <- mean_r2 + 1.96 * sem_r2
+# Calculate range for R-squared
+range_r2 <- max(r2_values, na.rm=T) - min(r2_values, na.rm=T)
+# t test on the r2 
+t.test(r2_values[,2], r2_values[,1], paired=T)
+# summarise in a df:
+r2_summary = data.frame(
+  mean = mean_r2,
+  SEM = sem_r2,
+  lbCI = ci_lower,
+  ubCI = ci_upper) %>% round(2) %>%
+  mutate(formula=c("log(choice) ~ log(day)", "log(choice) ~ log(day) + log(State)"),
+         model = c("practice", "practice + state")) 
+
+# library 
+library("flextable")
+set_flextable_defaults(theme_fun = "theme_apa", font.size=11)
+ftR2=flextable(r2_summary,
+               # reorder columns 
+  col_keys = c("model", "mean", "SEM", "lbCI", "ubCI", "formula")) %>%
+  set_table_properties(layout = "autofit") %>%
+  set_caption( 
+    caption = as_paragraph("Variance explaned (", 
+                           as_i("R"), as_sup("2"), ") across participants"), 
+    style = "Table Caption") %>%
+  # adjust column labels
+  set_header_labels("lbCI" = "2.5% CI", "ubCI"="97.5% CI")
+
+# Rename the columns for clarity
+colnames(beta_df) <- c("Intercept", "Practice", "State", "user_id")
+
+# independent t tests on practice and state vs. 0
+t.tests <- beta_df %>% 
+  pivot_longer(cols=2:3, names_to="coefficient") %>%
+  group_by(coefficient) %>%
+  rstatix::t_test(value~1) %>%  rstatix::add_significance() %>% 
+  rstatix::add_xy_position(x="coefficient") %>% mutate("y.position"=1.2)
+# %>%
+
+# plot without the intercept
+pPE_wO_int = beta_df %>%
+  pivot_longer(cols=c("Practice", "State"), names_to="coefficient", values_to="value") %>%
+  ggplot(aes(x=as.factor(coefficient), y=value, fill=coefficient)) +
+  geom_flat_violin(position = position_nudge(x = .1, y = 0), adjust = 1.5, trim = FALSE, alpha = .7, colour = NA) +
+  geom_jitter(aes(colour = coefficient),
+             position = position_jitter(width = .05), size = 4, shape = 20, alpha=0.75) +
+  geom_boxplot(outlier.shape = NA, alpha = .5, width = .1) +
+  #geom_line(aes(group=user_id), linetype = 3) +
+  geom_line(stat="summary", size=1, alpha=0.8) +
+  scale_colour_brewer(palette = "Blues")+
+  scale_fill_brewer(palette = "Blues") + theme_classic(base_size=32) + theme(legend.position="none")+
+  labs(y="Coefficient", x="Predictor") + 
+  stat_pvalue_manual(t.tests, remove.bracket=T, size=10)
+  
+
+ggsave(plot=pPE_wO_int,filename=paste0(fig_dir, "Figure_S6_practice.png"), 
+       height=30, width=30,
+       units="cm", bg="white")
+
+
+```
+
+
+
+
+# specificity: state 
+confirm that the effect is specific to state motivation
+```{r, state_happy}
+# make the size of data is the same 
+
+# run the mixed effect model with apathy factor 
+mME_altHappy = lmerTest::lmer(DeltaEffortChosen~ zTotal+zHappy + (1|user_id),
+                           data=data_beh, REML=F)
+
+summary(mME_altHappy)
+
+# compare this model to a model with zHappy only with LRT 
+mME_Happy = lmerTest::lmer(DeltaEffortChosen~ zHappy + (1|user_id),
+                           data=data_beh, REML=F)
+
+# conduct LRT with anova
+anova(mME_altHappy, mME_Happy)
+round(confint(mME_altHappy), 2)
+round(fixef(mME_altHappy), 2)
+
+# test the same for fatigue: 
+mME_altTired = lmerTest::lmer(DeltaEffortChosen~ zTotal + zTired + (1|user_id),
+                           data=data_beh, REML=F)
+
+summary(mME_altTired)
+round(confint(mME_altTired), 2)
+round(fixef(mME_altTired), 2)
+
+# compare this model to a model with zHappy only with LRT 
+mME_Tired = lmerTest::lmer(DeltaEffortChosen~ zTired + (1|user_id),
+                           data=data_beh, REML=F)
+
+# conduct LRT with anova
+anova(mME_altTired, mME_Tired)
+
+
+# test the same for sleep quality
+mME_altSleep = lmerTest::lmer(DeltaEffortChosen~ zTotal + zSleep_filled + (1|user_id),
+                           data=data_beh, REML=F)
+
+summary(mME_altSleep)
+round(confint(mME_altSleep), 2)
+round(fixef(mME_altSleep), 2)
+
+# compare this model to a model with zHappy only with LRT 
+mME_Sleep = lmerTest::lmer(DeltaEffortChosen~ zSleep_filled + (1|user_id),
+                           data=data_beh, REML=F)
+
+# conduct LRT with anova
+anova(mME_altSleep, mME_Sleep)
+
+```
+
+
+# specificity: depression
+
+```{r, CFA_depression_comparison}
+# take only complete data for these
+dep_data= baseline_data[complete.cases(baseline_data[, c("DASS21_Depression", 
+                                                              "DASS21_Anxiety","DASS21_Stress", 
+                                                              "FFMRF_neuroticism","SHAPS_Total")]),] 
+# extract only the scores:
+data_baseT=as.matrix(dep_data[, 3:ncol(dep_data)])
+
+depression.cfa = 'depression =~ DASS21_Depression + DASS21_Anxiety + DASS21_Stress + FFMRF_neuroticism + SHAPS_Total'
+
+fit_alt <- cfa(depression.cfa, data = data_baseVars)
+
+summary(fit_alt, fit.measures=T, standardized=T)
+
+# add depression to the existing scores:
+depression_anx_scores <- as.data.frame(cbind(dep_data[, "user_id"], lavPredict(fit_alt)))
+names(depression_anx_scores) = c("user_id", "depression")
+# add to summary data
+beh_data_depression = beh_data %>%
+  inner_join(depression_anx_scores, by="user_id") %>%
+  inner_join(apathy_scores, by="user_id") %>%
+  # normalise day 
+  normalise_predictors("day", between=T) %>% 
+  EMA_calc_mean(vars=c("Happy", "Sleep"))
+
+
+# check correlation between apathy and depression factor
+# is it appropriate to use parametric correlation on depression score
+shapiro.test(depression_anx_scores$depression) # no ! 
+
+# CFA depression validation
+pF1=ggplot(filter(beh_data_depression, day==0), aes(x=depression, y=mHappy))+
+  geom_point(size=4, shape=1)+
+  theme_classic(base_size=30)+
+  geom_smooth(method="lm", se=F)+
+  labs(x="Depression-Anxiety (day 0)", y="Happiness (EMA mean)") +
+      stat_cor(method = "spearman", label.x = -1, label.y = max(beh_data_depression$mHappy)*0.1,
+             label.sep='\n', cor.coef.name = "rho", size=8,
+           p.accuracy = 0.001, r.accuracy = 0.01) 
+pF1
+
+# also plot sleep cor
+pF1a=ggplot(filter(beh_data_depression, day==0), aes(x=depression, y=mSleep))+
+  geom_point(size=4, shape=1)+
+  theme_classic(base_size=30)+
+  geom_smooth(method="lm", se=F)+
+  labs(x="Depression-Anxiety (CFA, day 0)", y="Sleep (EMA mean)") +
+      stat_cor(method = "spearman", label.x = -1, label.y = max(beh_data_depression$mSleep)*0.1,
+             label.sep='\n', cor.coef.name = "rho", size=8,
+           p.accuracy = 0.001, r.accuracy = 0.01) 
+
+
+
+# also plot the correlation with apathy scores
+pF2=ggplot(filter(beh_data_depression, day==0), aes(x=depression, y=apathy))+
+  geom_point(size=4, shape=1)+
+  theme_classic(base_size=30)+
+  geom_smooth(method="lm", se=F)+
+  labs(x="Depression-Anxiety (day 0)", y="Apathy (day 0)") +
+      stat_cor(method = "spearman", label.x =1.5, label.y = -1.5,
+             label.sep='\n', cor.coef.name = "rho", size=8,
+           p.accuracy = 0.001, r.accuracy = 0.01) 
+
+
+# run the mixed effect model with apathy factor 
+# filter for only the minSess = 4
+beh_data_depression = beh_data_depression %>%
+  filter(user_id %in% completion$user_id)
+mME_alt = lmerTest::lmer(DeltaEffortChosen ~ zTotal*depression +
+                           (1+zTotal|user_id),
+                           data=beh_data_depression)
+
+summary(mME_alt)
+round(fixef(mME_alt), 2)
+round(confint(mME_alt, parm=c("depression", "zTotal:depression")), 2)
+
+```
+
+
+# Publication panel figures
+
+## figure 1
+figure 1 is the task design schematic
+
+
+## figure 2
+self-report figures
+```{r, self_report_figure2, fig.height=20, fig.width=20}
+library(cowplot)
+
+figure2=ggdraw() +
+  draw_plot(gCor1, x = 0, y = 0.6, width = 0.4, height = 0.4) +
+  draw_plot(State_mean, x = 0.4, y = 0.63, width = 0.3, height = 0.33) +
+  draw_plot(State_sd, x = 0.7, y = 0.63, width = 0.3, height = 0.33) +
+  draw_plot(pTrajectoryM_overlayCol, x = 0, y = 0.3, width = 0.6, height = 0.325) +
+  draw_plot(pWK, x = 0.6, y = 0, width = 0.4, height = 0.6) +
+  draw_plot(pACF, x = 0, y = 0, width =  0.3, height = 0.325) +
+  draw_plot(plot_ACF_combined_wD, x = 0.3, y = 0, width =  0.3, height = 0.325) +
+  draw_plot_label(label = c("A", "B", "C"), size = 32,
+                  x = c(0, 0.4, 0.7), y = c(.97,.97,.97)) +
+  draw_plot_label(label = c("D", "E", "F", "G"), size = 32,
+                  x = c(0, 0.6, 0, 0.3), y = c(0.61, 0.61,0.325, 0.325)) +
+  # add subheadings
+  draw_label("State correlations", x=0.5, y=0.985, size=36, fontface="bold") +
+  draw_label("State fluctuations", x=0.5, y=0.625, size=36, fontface="bold") 
+
+
+ggsave(filename=paste0(fig_dir, "figure2.png"), 
+       plot=figure2,
+       height=40, width=40,
+       units="cm", bg="white")
+```
+
+## figure 3
+task figure:
+```{r, task_figure1}
+# Arrange plots
+# Defining layout matrix
+library("cowplot")
+aligned_plots <- align_plots(pChoiceFunc, pSuccessR_sess, pCalib, pTRChoice_icc, pTR1, pTR3, pTR2, align = "v")
+
+
+figure3 <- ggdraw() +
+  draw_plot(aligned_plots[[1]], x = 0, y = 0, width = 0.46, height = 0.98) +
+  draw_plot(aligned_plots[[2]], x = 0.46, y = 0.49, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[3]], x = 0.46, y = 0, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[4]], x = 0.64, y = 0.49, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[5]], x = 0.64, y = 0, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[6]], x = 0.82, y = 0.49, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[7]], x = 0.82, y = 0, width = 0.18, height = 0.49) +
+  draw_plot_label(label = c("A"), size = 32, x = 0, y = 0.96) +
+  draw_plot_label(label = c("B", "C", "D", "E", "F", "G"), size = 28, 
+                  x = c(0.46, 0.46, 0.64, 0.64, 0.82, 0.82), 
+                  y = c(.96, 0.48, .96, 0.48, .96, 0.48))  +  # add subheadings
+  draw_label("Effort discounting", x=0.25, y=0.985, size=36, fontface="bold") +
+  draw_label("Calibration", x=0.575, y=0.985, size=36, fontface="bold") +
+  draw_label("Re-test reliability", x=0.85, y=0.985, size=36, fontface="bold") 
+
+
+# Save the plot using grid.arrange
+ggsave(filename = paste0(fig_dir, "figure3.png"),
+       plot = grid.arrange(figure3),
+       height = 40, width = 60,
+       units = "cm", bg = "white")
+
+
+# save smaller version for CPC poster 
+# include A: choice func 
+# B test re-test reliability 
+# for choice func use mean effortful choice var? 
+# larger test retest plot
+pTRChoice_icc2 = ggplot(filter(icc_df, behaviour=="choice"), aes(x = as.factor(behaviour), y = icc)) +
+  geom_boxplot(outlier.shape = NA, alpha = .5, width = .1) +
+  geom_jitter(width=0.3, alpha=0.4, shape=20, size=8)+
+  theme_classic(base_size=36) + theme(axis.text.x=element_blank(), axis.ticks.x = element_blank(),
+                                      legend.position="none", 
+                                      )+
+  labs(y="ICC", x="") + 
+  scale_y_continuous(breaks=c(0.5, 0.75, 1), limits=c(0.5,1), 
+                     labels=c("0.5", "0.75", "1"))
+
+```
+
+
+## figure 4
+
+visualisation technique from 
+https://www.azandisresearch.com/2022/12/31/visualize-mixed-effect-regressions-in-r-with-ggplot2/
+
+specific note on marginal versus conditional effects
+'marginal effect is asking “What would I expect y to be for a given x without knowing which experimental unit it came from?” whereas the conditional effect is asking “What would I expect y to be for a given x from a given experimental unit?” '
+
+```{r, figure4, fig.height=20, fig.width=20}
+
+# add lme model predictions 
+data_behLM = filter(data_beh, !is.na(DeltaEffortChosen)) %>%
+  mutate(fit.m = predict(mME_rs, re.form = NA),
+         fit.c = predict(mME_rs, re.form = NULL), 
+         # NULL includes conditioning on all random effects (intercept & slope)
+        resid = resid(mME_rs))
+
+## state main effect
+plt0=ggplot(data=data_behLM, aes(x=zTotal)) +
+  geom_point(aes(y=fit.c),  color="black", alpha=0.3)+
+  geom_smooth(aes(y=fit.m + resid), method="lm", se=T, color="black", alpha=0.3)+
+  theme(legend.position="none") +
+  labs(y="Effortful choice (mean %)",
+       x="State motivation")+
+  theme_classic(base_size=28) + theme(legend.position="none") + 
+  scale_x_continuous(breaks=c(-2, -1,0,1, 2), limits=c(-2.5,2.5)) + 
+  scale_y_continuous(breaks=c(-20, 0, 20, 40), limits=c(-28, 40),
+                     labels=c("-20", "0", "20", "40")) +
+  # annotate("text", x = -1, y = -28, 
+  #          label = label, size = 6) 
+  # plot significance star only manually
+  annotate("text", x = 0, y = 38, 
+           label = "***", size = 14)
+
+# save each subfigure for presentations
+ggsave(filename=paste0(fig_dir, "figure4_stateMotivation_main.png"), 
+       plot=plt0 +  theme_classic(base_size=36), # bigger text
+       height=20, width=20,
+       units="cm", bg="white")
+
+
+# trait main effect
+plt1=ggplot(data=data_behLM, aes(x=apathy)) +
+  geom_point(aes(y=fit.c),  color="black", alpha=0.3)+
+  geom_smooth(aes(y=fit.m + resid), method="lm", se=T, color="black", alpha=0.3)+  
+  theme(legend.position="none") +
+  labs(y="Effortful choice (mean %)",
+       x="Trait-apathy")+
+  theme_classic(base_size=28) + theme(legend.position="none") +
+  scale_y_continuous(breaks=c(-20, 0, 20, 40), limits=c(-28, 40),
+                     labels=c("-20", "0", "20", "40")) +
+   annotate("text", x = 0.25, y = 38, 
+           label = "**", size = 14)
+
+# save each subfigure
+ggsave(filename=paste0(fig_dir, "figure4_traitMotivation_main.png"), 
+       plot=plt1 +  theme_classic(base_size=36), # bigger text
+       height=20, width=20,
+       units="cm", bg="white")
+
+# split the apathy into groups 
+data_behLM=data_behLM %>%
+    mutate(apathy_quartile = ntile(apathy, 4),
+           apathy_quartile = factor(apathy_quartile, labels=c("Lowest <25%", "Low-med 25-50%", 
+                                                              "High-med 51-75%", "Highest >75%"))) 
+
+# plot state-trait interaction 
+plt2=ggplot(data=data_behLM, aes(x=zTotal, color=apathy_quartile, fill=apathy_quartile)) +
+  geom_line(aes(y=fit.c, group = user_id), alpha=0.8) + 
+  geom_smooth(aes(y=fit.m + resid, color=apathy_quartile, fill=apathy_quartile), method="lm", se=T, alpha=0.3)+
+  geom_point(aes(y=fit.c, group = user_id), size=1, alpha=0.8)+
+  theme(legend.position="none") +
+  labs(y="Effortful choice (mean %)",
+       x="State motivation", fill="Trait apathy", color="Trait apathy")+
+  #guides(fill="none")+
+  theme_classic(base_size=28) +
+  facet_wrap(~apathy_quartile, nrow=1) +
+  scale_x_continuous(breaks=c(-2, -1,0,1, 2), limits=c(-2.5,2.5),
+                     sec.axis = sec_axis(~ . , name = "Level of trait apathy", 
+                                         breaks = NULL, labels = NULL, guide=NULL)) +
+  scale_y_continuous(breaks=c(-40, -20, 0, 20, 40), limits=c(-20, 40),
+                     labels=c("-40", "-20", "0", "20", "40")) +
+  scale_color_manual(values = c("#8baac3", "#6489a5", "#3b6a89","#004c6d"),
+                     labels=c("<25%", "25-50%", "51-75%", ">75%")) +
+  scale_fill_manual(values = c("#8baac3", "#6489a5", "#3b6a89","#004c6d"),
+                     labels=c("<25%", "25-50%", "51-75%", ">75%")) +
+    # change legend features
+  theme(legend.position="none",
+        legend.background=element_blank(),
+        strip.text.x = element_text(color="#FEFBF6"), strip.background = element_rect(color="#FEFBF6"))
+
+
+# add coloure dbackground to the facet
+multiColourFacets = function(plot, fills, strip="strip-t"){
+  g <- ggplot_gtable(ggplot_build(plot))
+  strip <- which(grepl(strip, g$layout$name))
+  #fills <- c("#8baac3", "#6489a5", "#3b6a89","#004c6d")
+  k <- 1
+  for (i in strip) {
+      j <- which(grepl('rect', g$grobs[[i]]$grobs[[1]]$childrenOrder))
+      g$grobs[[i]]$grobs[[1]]$children[[j]]$gp$fill <- fills[k]
+    k <- k+1
+  }
+  return(g)
+}
+
+
+plt2_color = multiColourFacets(plt2, fills=c("#8baac3", "#6489a5", "#3b6a89","#004c6d"), strip="strip-t")
+
+ggsave(filename=paste0(fig_dir, "figure4_trait_state_interaction.png"), 
+       plot=plt2_color,
+       height=30, width=35,
+       units="cm", bg="white")
+
+
+```
+
+
+
+## Fig 4c 
+```{r, figure4b, fig.height=20, fig.width=20}
+
+# add the model predicted data for fatigue as an example
+data_behLM = filter(data_beh, !is.na(DeltaEffortChosen)) %>%
+  mutate(fit.m_Tired = predict(mME_Tired, re.form = NA),
+         fit.c_Tired = predict(mME_Tired, re.form = NULL), 
+         # NULL includes conditioning on all random effects (intercept & slope)
+        resid = resid(mME_Tired))
+
+
+plt0_f=ggplot(data=data_behLM, aes(x=zTired)) +
+  geom_point(aes(y=fit.c_Tired),  color="black", alpha=0.3)+
+  geom_smooth(aes(y=fit.m_Tired + resid), method="lm", se=T, color="black", alpha=0.3)+
+  theme(legend.position="none") +
+  labs(y="Effortful choice (mean %)",
+       x="State fatigue")+
+  theme_classic(base_size=28) + theme(legend.position="none") +
+  scale_x_continuous(breaks=c(-2, -1,0,1, 2), limits=c(-2.5,2.5)) +
+  scale_y_continuous(breaks=c(-20, 0, 20, 40), limits=c(-28, 40),
+                     labels=c("-20", "0", "20", "40")) #+
+  # annotate("text", x = -1, y = -28, 
+  #          label = label, size = 6)
+
+# save each subfigure
+ggsave(filename=paste0(fig_dir, "figure4_stateFatigue_main.png"), 
+       plot=plt0_f+theme_classic(base_size=36),
+       height=20, width=20,
+       units="cm", bg="white")
+
+```
+
+## modelling betas 
+
+```{r}
+# load previously fit parameter posteriors and plot 
+stan_fit_dir = paste0(repo_path, "analysis/stan_fits/")
+summary_sens = readRDS(file=paste0(stan_fit_dir, "rewEff_linear_bernoulli_multisess_joint_IRT_1param_model_subject_posterior_means.rds"))
+
+# make plot 
+pR_theta= summary_sens %>%
+  # remove games which were missing (data not provided by subject)
+  filter(missing == 0) %>%
+  mutate(day = (sess-1)*2) %>%
+  ggplot(aes(y=mean_rewSens, x=mean_thetaZ))  +
+  geom_point(aes(group=as.numeric(sess), color=as.numeric(day)), size=3)+
+  geom_errorbar(aes(ymin = mean_rewSens - sd_rewSens,
+                    ymax = mean_rewSens + sd_rewSens,
+                    group=as.numeric(sess), color=as.numeric(day)),
+                width = 0.05, alpha=0.5, size=0.25) +
+  geom_errorbarh(aes(xmin = mean_thetaZ - sd_thetaZ,
+                     xmax = mean_thetaZ + sd_thetaZ,
+                     group=as.numeric(sess), color=as.numeric(day)),
+                 height = 0.05, alpha=0.5, size=0.25) +
+  geom_abline(intercept = mean(summary_sens$mean_rewSens), 
+              slope = 0.19, color = "#58508d", size = 2, alpha=0.9) +
+  labs(y="Reward sensitivity (SD)", x="State motivation \U03B8 (SD)", color="Day")+
+  theme_classic(base_size=36) +
+  theme(legend.position=c(0.1, 0.8),
+        legend.key.size = unit(0.5, 'cm'),
+        legend.key.height = unit(0.75, 'cm'),
+        legend.key.width = unit(0.75, 'cm'),
+        legend.title = element_text(size = 32),
+        legend.text = element_text(size = 32)) +
+    scale_color_gradient(breaks=seq(0,14,7), high = "#bc5090", low = "#decad4",
+                      limits = c(0,14)) +
+  annotate("text", x = -0.25, y = 9.5, 
+           label = "***", size = 14)
+
+# save a copy 
+ggsave(filename=paste0(fig_dir, "figure4_rewSens_state.png"), 
+       plot=pR_theta,
+       height=30, width=25,
+       units="cm", bg="white")
+
+# version with errorbars
+pE_theta = summary_sens %>%
+    # remove games which were missing (data not provided by subject)
+  filter(missing == 0) %>%
+  mutate(day = (sess - 1) * 2) %>%
+  ggplot(aes(y = mean_effSens, x = mean_thetaZ)) +
+  geom_errorbar(aes(ymin = mean_effSens - sd_effSens,
+                    ymax = mean_effSens + sd_effSens,
+                    group=as.numeric(sess), color=as.numeric(day)),
+                width = 0.05, alpha=0.5, size=0.25) +
+  geom_errorbarh(aes(xmin = mean_thetaZ - sd_thetaZ,
+                     xmax = mean_thetaZ + sd_thetaZ,
+                     group=as.numeric(sess), color=as.numeric(day)),
+                 height = 0.05, alpha=0.5, size=0.25) +
+  geom_point(aes(group=as.numeric(sess), color=as.numeric(day)), size=3)+  
+  labs(y = "effort sensitivity (SD)", x = "state motivation \U03B8 (SD)", 
+       color = "Day") +
+  theme_classic(base_size = 28) +
+  theme(
+        legend.key.size = unit(0.5, 'cm'),
+        legend.key.height = unit(0.75, 'cm'),
+        legend.key.width = unit(0.75, 'cm'),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 16)) +
+    scale_color_gradient(breaks=seq(0,14,7), high = "#ff6361", low = "#ffd6d1",
+                      limits = c(0,14)) 
+
+# save a copy 
+ggsave(filename=paste0(fig_dir, "figure4_effSens_state.png"), 
+       plot=pE_theta+theme_classic(base_size=36),
+       height=20, width=20,
+       units="cm", bg="white")
+
+# plot of the beta weights themselves
+# load beta posteriors for the current state model
+draws_beta = readRDS(paste0(stan_fit_dir,
+                            "rewEff_linear_bernoulli_multisess_joint_IRT_1param_model_posterior_draws_group_level_betas.rds")) 
+# update names to have beta prefix 
+names(draws_beta) = c("draw", paste0("beta_", names(draws_beta)[2:ncol(draws_beta)]))
+
+# load the timeseries betas (previous and future)
+draws_beta_TS = readRDS(file=paste0(stan_fit_dir,
+                            "rewEff_linear_bernoulli_multisess_joint_IRT_1param_rewSens_lag1_model_posterior_draws_group_level_betas.rds")) %>%
+  # rename vars to include beta prefix
+  dplyr::rename(beta_rew_previous = previousState, 
+                beta_rew_next   = nextState)
+
+# combine them (without duplicate draws in df2)
+draws = cbind(draws_beta, draws_beta_TS[, 2:ncol(draws_beta_TS)]) 
+
+draws_dir = draws %>% select(1, 2,6,7) %>%
+  # ensure df is in directional order
+  pivot_longer(cols = c(2:4), names_to = "beta", values_to = "estimate") %>%
+  mutate(beta = factor(beta, levels = c("beta_rew_next", "beta_state_rew", "beta_rew_previous"),
+                       labels = c( "future", "current", "past")))
+
+
+
+# plot
+# Plot with reordered y-axis
+pB = draws_dir %>% 
+  ggplot(aes(x = estimate, y = beta, group = beta, fill = beta)) +
+  ggdist::stat_dist_slabinterval(.width = c(.1, .9), alpha = 0.5) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_classic(base_size = 28) +
+  labs(fill = "direction", x = "Effect on (current) reward sensitivity",
+       y="State Motivation") + 
+  scale_fill_manual(values=c("#ffd4ee", "#d39bb8", "#e9b7d3")) + 
+  # manual sig plots
+   annotate("text", x = 0.4, y = 3.25, 
+           label = "**", size = 14) +
+     annotate("text", x = 0.4, y = 2.25, 
+           label = "***", size = 14)
+
+# save a copy 
+ggsave(filename=paste0(fig_dir, "figure4_posterior_betas.png"), 
+       plot=pB+theme_classic(base_size=36) +   theme(legend.position = "none"),
+       height=30, width=25,
+       units="cm", bg="white")
+
+
+```
+
+
+## figure 4grid
+split the main and interaction effects
+a. state main effect 
+b. trait main effect 
+c. state*trait interaction 
+d. non-sig alternative state effect
+e. reward sensitivity main effect state 
+f. reward sensitivity previous vs. next with colours 
+
+```{r, figure4bgrid}
+
+# longer version
+figure4=ggdraw() +
+  draw_plot(plt1, x = 0, y = .66, width = .33, height = .33) +
+  draw_plot(plt0, x = 0.33, y = .66, width = .33, height = .33) +
+  draw_plot(plt0_f, x = 0.66, y = 0.66, width = .33, height = .33) +
+  draw_plot(plt2_color, x = 0, y = 0.33, width = 1, height = .33) +
+  draw_plot(pR_theta + 
+              # change legend size
+              theme(legend.position=c(0.15, 0.9),
+        legend.key.size = unit(0.3, 'cm'),
+        legend.key.height = unit(0.5, 'cm'),
+        legend.key.width = unit(0.5, 'cm'),
+        legend.title = element_text(size = 32),
+        legend.text = element_text(size = 32)) +
+    scale_color_gradient(breaks=seq(0,14,7), high = "#bc5090", low = "#decad4",
+                      limits = c(0,14)), x = 0, y = 0, width = .5, height = .33) +
+  draw_plot(pB + theme(legend.position="none"), x = 0.5, y = 0, width = 0.5, height = .33) +
+  draw_plot_label(label = c("A", "B", "C", "D", "E", "F"), size = 28,
+                  x = c(0, .33, .66, 0, 0, 0.5), y = c(1, 1, 1, .66, .33, .33))
+  
+  
+ggsave(filename = paste0(fig_dir, "figure4.png"),
+       plot = figure4,
+       height = 60, width = 40,
+       units = "cm", bg = "white")
+
+
+
+```
+
+# Tables 
+```{r}
+
+save_as_docx(
+  `Table S1` = ftmEcomp, `Table S2` = ftR2,
+  path=paste0(table_dir, "supplementaryTables.docx"))
+
+```
+
+
+# supplementary figures 
+## figure S8 depression validiation 
+```{r}
+
+figureSX=ggdraw() +
+  draw_plot(pF1, x = 0, y = 0, width = 0.5, height = 1) +
+  draw_plot(pF2, x = 0.5, y = 0, width = 0.5, height = 1) +
+  draw_plot_label(label = c("A", "B"), size = 32,
+                  x = c(0,0.5), y = c(1, 1)) 
+
+# Save the plot using grid.arrange
+ggsave(filename = paste0(fig_dir, "figure_S8_depressionCFA.png"),
+       plot = grid.arrange(figureSX),
+       height = 30, width = 40,
+       units = "cm", bg = "white")
+```
+
+
+## mixed effects model: random effects
+```{r}
+
+rs_var = VarCorr(mME_rs)
+# store random effect std
+Cond_DF2 <- as.data.frame(ranef(mME_rs)) 
+  
+# extract random effects 
+re = ranef(mME_rs)$user_id 
+int_plt <- re %>%
+  tibble::rownames_to_column(var="Subject") %>%
+  dplyr::rename("Intercept"="(Intercept)", 
+                "state" = "zTotal") 
+
+int_plt = Cond_DF2 %>%
+  filter(term=="(Intercept)") %>%
+  ggplot(aes(x = condval, y = reorder(grp, condval))) +
+  geom_errorbar(aes(xmin =  condval - condsd,
+                    xmax = condval + condsd),
+                width = 0, size = 0.5, alpha=0.7) +
+  geom_point(size = 2, alpha=0.7,
+             shape = 21,
+             color = "black",
+             fill = "white") +
+  geom_vline(xintercept = 0,
+             color = "red",
+             size = 0.8, alpha=0.8,
+             linetype = "dashed") + 
+  labs(x = "Intercept",y = "Individual") + 
+  theme_classic(base_size=24) +
+  theme(axis.ticks.y = element_blank(), axis.text.y = element_blank())
+
+slope_plt <- Cond_DF2 %>%
+  filter(term=="zTotal") %>%
+  ggplot(aes(x = condval, y = reorder(grp, condval))) +
+  geom_errorbar(aes(xmin =  condval - condsd,
+                    xmax = condval + condsd),
+                width = 0, size = 0.5, alpha=0.7) +
+  geom_point(size = 2, alpha=0.7,
+             shape = 21,
+             color = "black",
+             fill = "white") +
+  geom_vline(xintercept = 0,
+             color = "red",
+             size = 0.8, alpha=0.8,
+             linetype = "dashed") +
+  labs(x = "State slope",y = "Individual") + 
+  theme_classic(base_size=24) +
+  theme(axis.ticks.y = element_blank(), axis.text.y = element_blank()) 
+
+
+
+
+# confirm normality of residuals 
+pResid =ggplot(as.data.frame(resid(mME_rs)), aes_string(x="resid(mME_rs)"))+
+  ggdist::stat_dotsinterval(side="bottom")+
+  ggdist::stat_dist_halfeye()+
+  theme_classic(base_size=24)+
+  labs(x="residuals", y="PDF") 
+
+# reshape ran eff dataframe
+Cond_DF2 <- as.data.frame(ranef(mME_rs)) %>% 
+  transmute(unit = grp,
+            term = case_when(term == "(Intercept)" ~ "b0_state",
+                             term == "zTotal" ~ "b1_state"),
+            value = condval) %>%
+  pivot_wider(id_cols = "unit", names_from = "term", values_from = "value") %>%
+  mutate(Intercept_cond = b0_state + summary(mME_rs)$coef[1,1],
+         Slope_cond = b1_state + summary(mME_rs)$coef[2,1])
+
+# 
+pmain <- Cond_DF2 %>%
+  ggplot(aes(x = Intercept_cond, y = Slope_cond)) +
+    geom_point(size = 1, alpha=0.8) +
+    geom_density2d(bins = 4, col = "grey", adjust = 3) +
+    theme_classic(base_size=24) + theme(legend.position="none") +
+    labs(y="slope", x="intercept")
+
+# add the histograms 
+xdens <- axis_canvas(pmain, axis = "x") +
+  geom_density(data = Cond_DF2, aes(x = Intercept_cond), fill = "grey", col = NA, trim = FALSE, adjust = 2)
+
+ydens <- axis_canvas(pmain, axis = "y", coord_flip = TRUE) +
+  geom_density(data = Cond_DF2, aes(x = Slope_cond), fill = "grey", col = NA, trim = FALSE, adjust = 2) +
+  coord_flip()
+
+p1 <- insert_xaxis_grob(pmain, xdens, grid::unit(.2, "null"), position = "top")
+p2 <- insert_yaxis_grob(p1, ydens, grid::unit(.2, "null"), position = "right")
+
+pinsert_lme <- ggdraw(p2) + labs(x="intercept", y="slope")
+
+# create the supplementary figure grid 
+pREs=ggdraw() +
+  draw_plot(int_plt, x = 0, y = 0.5, width = 0.5, height = .5) +
+  draw_plot(slope_plt, x = 0, y = 0, width = 0.5, height = .5) +
+  ##draw_plot(compPlot, x=0.5, y=.65, width=0.4, height=0.4) +
+  draw_plot(pResid, x=0.5, y=0.5, width=0.5, height=.5)+
+  draw_plot(ggdraw(p2)+labs(x="intercept", y="slope"), x = 0.5, y = 0, width = 0.5, height = .5) +
+  draw_plot_label(label = c("A", "B", "C", "D"), size = 32,
+                  x = c(0,0,0.5,0.5), y = c(1, 0.5,1,0.5)) 
+
+
+
+ggsave(filename = paste0(fig_dir, "figure_S6_lme.png"),
+       plot = grid.draw(pREs),
+       height = 30, width = 30,
+       units = "cm", bg = "white")
+
+```
+
+
+
+## pilot data
+
+state item validity data 
+```{r, self_report_validation}
+
+#directories
+data_dir <- ("D:/EMA_Motivation/data/pilot_self_report/ema/")
+#read 
+dataSR <- read.csv(paste0(data_dir, "data_excl_n35_noReverse.csv"), fill = TRUE)
+# var names
+raw_vars<- c("Happy", "Energy", "BA1", "BA2", "SM1", "SM2", "Sleep", "BA", "SM", "Total")
+Q_vars <- c("bis_total", "dass_total", "dass_depression", "dass_anxiety", "dass_stress", 
+            "ami_behavioural", "ami_social", "ami_emotional", "age")
+
+vars = c("Happy", "Energy", "Sleep", "BA", "SM", "Total")
+# reverse score energy
+dataSR = EMA_calc_mean(dataSR, vars)
+# add totals to the raw vars to calculate variability statistics
+data_baseSR = calc_variability(dataSR, vars, Q_vars, log=T, entropy=F) 
+# rename: 
+new_var=c("BIS_total", "DASS21_Total", "DASS21_Depression", "DASS21_Anxiety","DASS21_Stress","AMI_behavioural", "AMI_social", "AMI_emotional", "age")
+# apply rename to match:
+for (q in seq(Q_vars)) {
+  colnames(data_baseSR)[colnames(data_baseSR) == Q_vars[q]] <- new_var[q]
+}
+
+# make the df long format 
+data_baseSR$AMI_Total = data_baseSR$AMI_behavioural + data_baseSR$AMI_social;
+
+# between person cors 
+vars=c("user_id", "mHappy",  "mSleep", "mTotal", "mEnergy", "AMI_Total", "AMI_behavioural", "AMI_social", "DASS21_Total")
+
+corBS_SR = Hmisc::rcorr(as.matrix(data_baseSR[, vars]), type="spearman")
+# print out mean state motivation total scores
+round(corBS_SR$r[, "mTotal"], 2)
+round(corBS_SR$P[, "mTotal"], 4)
+
+
+# within person, repeated measures cor 
+predictors=c("Total", "Happy", "Energy", "Sleep")
+
+corWS_SR=list(); # store the output in a list
+for(p in 2:length(predictors)){
+  
+  message('running within person corr Total motivation & ', predictors[p], '...')
+  # motivation with everything else
+corWS_SR[[p-1]]=rmcorr("user_id", predictors[1], predictors[p], dataSR, CIs="bootstrap",
+            nreps = 100,bstrap.out = F)
+  
+}
+
+
+# autocorrelation 
+dataSRX = dataSR %>% 
+    normalise_predictors(predictors=c("Total"), between=0) %>%
+    group_by(user_id, day) %>%
+    mutate(zLTotal_day = lag(zTotal)) %>% ungroup()
+
+# no intercept, given this is not useful for centred data; random slopes only 
+mMElag_zTotal_wDay = lmerTest::lmer(zTotal~ zLTotal_day +
+                               (0+zLTotal_day|user_id),
+                             data=dataSRX, REML=F)
+
+summary(mMElag_zTotal_wDay)
+
+
+```
+
+
+## apathy for included vs. excluded
+```{r, excluded}
+# mark who was included vs. excluded 
+apathy_scores = apathy_scores %>% 
+  mutate(excluded = as.factor(ifelse(user_id %in% beh_data$user_id, "included", "excluded"))) 
+
+# compare apathy for the two groups 
+pApathyExcl<- ggplot(apathy_scores, aes(x = excluded, y = apathy, fill = excluded),
+             show.legend=F) +
+  geom_flat_violin(position = position_nudge(x = .1, y = 0), adjust = 1.5, trim = FALSE, alpha = .6, colour = NA) +
+  geom_jitter(aes(colour = excluded),
+             position = position_jitter(width = .05), size = 2, shape = 20, alpha=0.8) +
+  geom_boxplot(outlier.shape = NA, alpha = .6, width = .1) +
+  geom_line(aes(group=user_id), linetype = 3, linewidth=0.25) +
+  scale_color_manual(values=c("#fcd8b3", "#fba834")) +
+  scale_fill_manual(values=c("#fcd8b3", "#fba834")) +
+  theme_classic(base_size=24) +
+  labs(y="Trait-apathy", x="", color="", fill="") +
+  geom_signif(
+    comparisons = list(c("included", "excluded")),
+    map_signif_level = TRUE, textsize = 6,     margin_top = 0.15,
+  ) 
+
+# compare them
+shapiro.test(apathy_scores$apathy[apathy_scores$excluded=="included"])
+wilcox.test(apathy_scores$apathy[apathy_scores$excluded=="included"], 
+       apathy_scores$apathy[apathy_scores$excluded=="excluded"])
+# cohen's d 
+lsr::cohensD(x=apathy_scores$apathy[apathy_scores$excluded=="included"], 
+               y=apathy_scores$apathy[apathy_scores$excluded=="excluded"], 
+               method = "unequal")
+
+
+# save a copy 
+ggsave(filename=paste0(fig_dir, "Figure_S3_apathyExclusion.png"), 
+       plot=pApathyExcl+theme_classic(base_size=32),
+       height=20, width=20,
+       units="cm", bg="white")
+
+```
+
+
+## figure S5 trajectories BA & SM
+BA (behavioural activation) from Apathy Motivation Index (I feel like making effort is difficult; I feel motivated...)
+SM (social motivation): I am starting conversations... ; I am thinking of plans 
+```{r, trajectory_split_BA_sm}
+# compare trajectories for each domain separately 
+# make a larger version for powerpoint presentations 
+pTrajectoryM_overlayCol_BA = day_means %>% group_by(user_id, weekday) %>%
+  summarise(zMeanState = mean(zBA_m, na.rm=T)) %>% ungroup() %>%
+  # create a numeric vector for the weekdays (1=thurs as first day in the study; 7=weds)
+  mutate(d = as.numeric(weekday))%>%
+  ggplot(aes(x = d, y=zMeanState)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), color="#00c0ff",
+                   fun.data=mean_se, geom="point",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), color="#00c0ff",
+                   fun.data=mean_se, geom="line",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="errorbar",size=1.25, alpha=0.8) +
+  stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="line",size=1.25, alpha=0.8) +
+  labs(x="weekday", 
+       y="State Motivation", title="Behavioural") +
+   theme_classic(base_size=38) + 
+  scale_x_continuous(limits=c(0.75,7.25), breaks=seq(1,7,1), 
+                     labels=unique(day_means$weekday)) +
+  ylim(-1.5, 1.5)+
+  theme(axis.text.x = element_text(angle = 30, size=32), legend.position = "none") 
+# save it
+ggsave(filename=paste0(fig_dir, "trajectory_subjects_means_zBA.png"), 
+       plot=pTrajectoryM_overlayCol_BA,
+       height=30, width=30,
+       units="cm", bg="white")
+
+# social 
+pTrajectoryM_overlayCol_SM = day_means %>% group_by(user_id, weekday) %>%
+  summarise(zMeanState = mean(zSM_m, na.rm=T)) %>% ungroup() %>%
+  # create a numeric vector for the weekdays (1=thurs as first day in the study; 7=weds)
+  mutate(d = as.numeric(weekday))%>%
+  ggplot(aes(x = d, y=zMeanState)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), color="#e876ba",
+                   fun.data=mean_se, geom="point",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  stat_summary_bin(aes(group=user_id, color=user_id), color="#e876ba",
+                   fun.data=mean_se, geom="line",size=0.6, alpha=0.6,
+                   position=position_dodge(width=0.1)) +
+  geom_hline(yintercept=0, linetype="dashed") +
+  stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="errorbar",size=1.25, alpha=0.8) +
+  stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="line",size=1.25, alpha=0.8) +
+  labs(x="weekday", 
+       y="State Motivation", title="Social") +
+   theme_classic(base_size=38) + 
+  scale_x_continuous(limits=c(0.75,7.25), breaks=seq(1,7,1), 
+                     labels=unique(day_means$weekday)) +
+  ylim(-1.5, 1.5)+
+  theme(axis.text.x = element_text(angle = 30, size=32), legend.position = "none") 
+# save it
+ggsave(filename=paste0(fig_dir, "trajectory_subjects_means_zSM.png"), 
+       plot=pTrajectoryM_overlayCol_SM,
+       height=30, width=30,
+       units="cm", bg="white")
+
+# run anova: is zTotal_m different on different days?
+anova_result_BA <- aov(zBA_m ~ weekday*as.factor(user_id), data = day_means)
+# Display ANOVA summary
+anova_table_BA = eta2_effects(summary(anova_result_BA))
+
+
+# SM 
+anova_result_SM <- aov(zSM_m ~ weekday*as.factor(user_id), data = day_means)
+# Display ANOVA summary
+anova_table_SM =  eta2_effects(summary(anova_result_SM))
+
+
+# for simpler reporting; divide the week into mon-weds and thurs to Sun
+week_means = day_means %>%
+  mutate(week_split = ifelse(weekday %in% c("Mon", "Tue", "Wed"),"Mon-Wed","Thurs-Sun"))
+
+# Subset data into paired vectors
+wk_summary = week_means %>% group_by(user_id, week_split) %>%
+  summarise(mean_BA = mean(zBA_m, na.rm=T),
+            mean_SM = mean(zSM_m, na.rm=T), 
+            se_BA = sd(zBA_m, na.rm=T)/sqrt(n()),
+            se_SM = sd(zSM_m, na.rm=T)/sqrt(n()),
+            mean_choice = mean(choice_m, na.rm=T))
+
+
+wk1 = filter(wk_summary, week_split=="Mon-Wed") %>% arrange(user_id); 
+wk2 = filter(wk_summary, week_split=="Thurs-Sun") %>% arrange(user_id)
+
+# run paired t test for the weekday split on STATE
+tBA=t.test(wk1$mean_BA, wk2$mean_BA, paired = TRUE, alternative = "two.sided")
+tSM=t.test(wk1$mean_SM, wk2$mean_SM, paired = TRUE, alternative = "two.sided")
+
+# get effect size
+# cohen's d 
+message('state BA first vs. second part of week cohen d = ', round(lsr::cohensD(wk1$mean_BA, wk2$mean_BA, method = "paired"),2))
+message('state SM first vs. second part of week cohen d = ', round(lsr::cohensD(wk1$mean_SM, wk2$mean_SM, method = "paired"),2))
+
+
+# plot the paired relationship 
+pos <- position_dodge(width = 0.2)
+library(raincloudplots)
+# initialise data format
+
+# behavioural
+pWK_BA <- ggplot(wk_summary, aes(x = week_split, y = mean_BA, fill = week_split),
+             show.legend=F) +
+  geom_flat_violin(position = position_nudge(x = .1, y = 0), adjust = 1.5, trim = FALSE, alpha = .6, colour = NA) +
+  geom_jitter(aes(colour = week_split),
+             position = position_jitter(width = .05), size = 2, shape = 20, alpha=0.8) +
+  geom_boxplot(outlier.shape = NA, alpha = .6, width = .1) +
+  geom_line(aes(group=user_id), linetype = 3, linewidth=0.25) +
+  scale_color_manual(values=c("#003f5c", "#84abc6")) +
+  scale_fill_manual(values=c("#003f5c", "#84abc6"))+ 
+  theme_classic(base_size=30) +
+  labs(y="State Motivation", x="", title="Behavioural") +
+  geom_signif(
+    comparisons = list(c("Mon-Wed", "Thurs-Sun")),
+    map_signif_level = TRUE, textsize = 14,     margin_top = 0.15,
+  ) + guides(fill = FALSE, colour = FALSE)  + 
+  scale_y_continuous(limits=c(-1,1), breaks=seq(-1,1,0.5), labels=c("-1", "-0.5", "0", "0.5", "1"))+
+  # rotate x-axis labels 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1))
+# a version of this plot which is bigger for presentations 
+#pWK_BA =pWK_BA + theme_classic(base_size=38)
+
+
+# social
+pWK_SM <- ggplot(wk_summary, aes(x = week_split, y = mean_SM, fill = week_split),
+             show.legend=F) +
+  geom_flat_violin(position = position_nudge(x = .1, y = 0), adjust = 1.5, trim = FALSE, alpha = .6, colour = NA) +
+  geom_jitter(aes(colour = week_split),
+             position = position_jitter(width = .05), size = 2, shape = 20, alpha=0.8) +
+  geom_boxplot(outlier.shape = NA, alpha = .6, width = .1) +
+  geom_line(aes(group=user_id), linetype = 3, linewidth=0.25) +
+  scale_color_manual(values=c("#bc5090", "#eaaace")) +
+  scale_fill_manual(values=c("#bc5090", "#eaaace"))+ 
+  theme_classic(base_size=30) +
+  labs(y="State Motivation", x="", title="Social") +
+  # geom_signif(
+  #   comparisons = list(c("Mon-Wed", "Thurs-Sun")),
+  #   map_signif_level = function(p) sprintf("p = %.2g", tSM$p.value), textsize = 6,     margin_top = 0.15,
+  # ) + 
+  # geom_signif not working ? so plot p-value manually 
+  annotate("text", x = 1.6, y = 1, 
+           label = sprintf("p = %.1g", tSM$p.value), size = 6) + 
+  guides(fill = FALSE, colour = FALSE)  + 
+  scale_y_continuous(limits=c(-1,1), breaks=seq(-1,1,0.5), labels=c("-1", "-0.5", "0", "0.5", "1")) +
+  # rotate x-axis labels 
+  theme(axis.text.x = element_text(angle = 30, vjust = 1, hjust=1)) 
+
+# a version of this plot which is bigger for presentations 
+#pWK_SM =pWK_SM + theme_classic(base_size=38)
+
+# save a grid of these
+figureBASM_split=ggdraw() +
+  draw_plot(pTrajectoryM_overlayCol_BA, x = 0, y = 0.5, width = 0.66, height = 0.5) +
+  draw_plot(pTrajectoryM_overlayCol_SM, x = 0, y = 0, width = 0.66, height = 0.5) +
+  draw_plot(pWK_BA, x = 0.66, y = 0.5, width = 0.33, height = 0.5) +
+  draw_plot(pWK_SM, x = 0.66, y = 0, width = 0.33, height = 0.5)+
+  draw_plot_label(label = c("A", "B", "C", "D"), size = 32,
+                  x = c(0, 0.66, 0, 0.66), y = c(1, 1, 0.5, 1)) 
+
+ggsave(filename=paste0(fig_dir, "figure_S5_SM_BA_weekdays.png"), 
+       plot=figureBASM_split,
+       height=40, width=40,
+       units="cm", bg="white")
+
+```
+
+
+you made it :) 

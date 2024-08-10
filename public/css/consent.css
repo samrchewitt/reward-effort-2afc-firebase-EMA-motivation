@@ -1,0 +1,47 @@
+/*
+ * Misc CSS styling for consent form .
+ *
+ */
+
+@import url(https://fonts.googleapis.com/css?family=Open+Sans:400italic,700italic,400,700);
+
+.row::after {
+  content: "";
+  clear: both;
+  display: table;
+}
+.row {width: 100%;}
+.col-3 {
+  width: 25%;
+  float: left;
+  padding: 15px;
+  border: none;
+}
+.col-6 {
+  width: 50%;
+  float: left;
+  padding: 15px;
+  border: none;
+  background-color: aliceblue;
+}
+
+input[type=submit] {
+  font-size: 18px; 
+  font-weight: 500;
+  padding: 5px 15px; 
+  background: powderblue; 
+  -webkit-border-radius: 5px; 
+  border-radius: 5px;
+  border: 3px solid; 
+  border-color: darkgray; 
+  cursor: pointer;
+}
+
+input[type=checkbox] {
+  -ms-transform: scale(1.4); /* IE */
+  -moz-transform: scale(1.4); /* FF */
+  -webkit-transform: scale(1.4); /* Safari and Chrome */
+  -o-transform: scale(1.4); /* Opera */
+  transform: scale(1.4);
+  padding: 10px;
+}
