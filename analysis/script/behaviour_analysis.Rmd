@@ -1725,7 +1725,7 @@ figure2=ggdraw() +
   draw_label("State fluctuations", x=0.5, y=0.625, size=36, fontface="bold") 
 
 
-ggsave(filename=paste0(fig_dir, "figure2.png"), 
+ggsave(filename=paste0(fig_dir, "figure2_noSubHeading.png"), 
        plot=figure2,
        height=40, width=40,
        units="cm", bg="white")
@@ -1921,9 +1921,9 @@ plt0_f=ggplot(data=data_behLM, aes(x=zTired)) +
   theme_classic(base_size=28) + theme(legend.position="none") +
   scale_x_continuous(breaks=c(-2, -1,0,1, 2), limits=c(-2.5,2.5)) +
   scale_y_continuous(breaks=c(-20, 0, 20, 40), limits=c(-28, 40),
-                     labels=c("-20", "0", "20", "40")) #+
-  # annotate("text", x = -1, y = -28, 
-  #          label = label, size = 6)
+                     labels=c("-20", "0", "20", "40")) +
+  annotate("text", x = 0, y = 40, 
+           label = "n.s.", size = 11)
 
 # save each subfigure
 ggsave(filename=paste0(fig_dir, "figure4_stateFatigue_main.png"), 
@@ -2092,7 +2092,33 @@ figure4=ggdraw() +
                   x = c(0, .33, .66, 0, 0, 0.5), y = c(1, 1, 1, .66, .33, .33))
   
   
-ggsave(filename = paste0(fig_dir, "figure4.png"),
+ggsave(filename = paste0(fig_dir, "figure4_v2.png"),
+       plot = figure4,
+       height = 60, width = 40,
+       units = "cm", bg = "white")
+
+
+# version 3 with no figure 4c for state fatigue
+figure4=ggdraw() +
+  draw_plot(plt1, x = 0, y = .66, width = .5, height = .33) +
+  draw_plot(plt0, x = 0.5, y = .66, width = .5, height = .33) +
+  draw_plot(plt2_color, x = 0, y = 0.33, width = 1, height = .33) +
+  draw_plot(pR_theta + 
+              # change legend size
+              theme(legend.position=c(0.15, 0.9),
+        legend.key.size = unit(0.3, 'cm'),
+        legend.key.height = unit(0.5, 'cm'),
+        legend.key.width = unit(0.5, 'cm'),
+        legend.title = element_text(size = 32),
+        legend.text = element_text(size = 32)) +
+    scale_color_gradient(breaks=seq(0,14,7), high = "#bc5090", low = "#decad4",
+                      limits = c(0,14)), x = 0, y = 0, width = .5, height = .33) +
+  draw_plot(pB + theme(legend.position="none"), x = 0.5, y = 0, width = 0.5, height = .33) +
+  draw_plot_label(label = c("A", "B", "C", "D", "E"), size = 28,
+                  x = c(0, .5, 0, 0, 0.5), y = c(1, 1, .66, .33, .33))
+  
+  
+ggsave(filename = paste0(fig_dir, "figure4_v3.png"),
        plot = figure4,
        height = 60, width = 40,
        units = "cm", bg = "white")
