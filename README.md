@@ -41,13 +41,13 @@ questions: s.hewitt.17@ucl.ac.uk
 [see firebase docs for more info](https://firebase.google.com/docs/build)
 ### examples: host game in local browser via emulators 
 ```
-cd Documents/Github/reward-effort-2afc-firebase-BEX-FU
+cd Documents/Github/reward-effort-2afc-firebase-EMA-motivation
 firebase emulators:start 
 ```
 
 #### preview game version via a channel (online)
 ```
-cd Documents/Github/reward-effort-2afc-firebase-BEX-FU
+cd Documents/Github/reward-effort-2afc-firebase-EMA-motivation
 firebase hosting:channel:deploy new-awesome-feature --expires 7d
 ```
 
