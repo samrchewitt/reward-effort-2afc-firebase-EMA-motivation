@@ -12,8 +12,9 @@ behavioural analysis
 rm(list=ls()) #clear workspace 
 #dev.off(dev.list()["RStudioGD"]) #clear workspace and remove plots
 options(scipen=999)
+#
 
-# load packages
+# load packages, or install if not 
 packages <- c("rjson","dplyr", "tidyverse", "tidyr", "reshape2",
               "ggpmisc", "patchwork", "plotly", "devtools", "nlme", "kableExtra", "robustlmm", "ggsignif")
 if (length(setdiff(packages, rownames(installed.packages()))) > 0 ) {
@@ -27,23 +28,23 @@ repo_path = paste0('C:/Users/', Sys.getenv("USERNAME"),'/Documents/GitHub/reward
 source(paste0(repo_path, 'analysis/functions/rew_eff_functions.R'))
 source(paste0(repo_path, 'analysis/functions/util_functions.R'))
 
+
 # load rainCloudPlot src code
 source_url("https://raw.githubusercontent.com/RainCloudPlots/RainCloudPlots/master/tutorial_R/R_rainclouds.R")
-ema_packages(); plot_packages(); fa_packages() 
+ema_packages(); plot_packages(); 
 
 # make select dplyr default
 select <- dplyr::select
 
-# STUDY / task dirs
+# STUDY 1 -
+# when using pilot data, which task version to filter for
 task_ver <- "study1"
 part = "all"
 
-# paths
+# directories
 data_dir <- paste0("D:/EMA_Motivation/data/", task_ver, "/")
 task_data_dir <- paste0("D:/EMA_Motivation/data/", task_ver, "/ema/task/")
 fig_dir <- paste0(repo_path, "analysis/figs/")
-# manuscript fig dir 
-manuscript_figs = paste0(fig_dir, 'manuscript/')
 # table directory for direct output tables
 table_dir = paste0(repo_path, "analysis/tables/")
 
@@ -58,7 +59,6 @@ beh_data = read.csv(file=paste0(task_data_dir, "csv/behavioural_data_anon.csv"))
 
 # summarise sample
 ```{r, combined_sample}
-summarise=dplyr::summarise; 
 # get time to complete tasks 
 QC_data = long_data %>%
   group_by(user_id, sess) %>%
@@ -101,6 +101,11 @@ message(paste0("person mean N games = ", round(mean(summaryComplete$tGames), 1))
 message(paste0("person min Games = ", min(summaryComplete$tGames)))
 # min states
 message(paste0("person min t states = ", min(summaryComplete$responses)))
+# mode games 
+getmode <- function(v) {
+   uniqv <- unique(v)
+   uniqv[which.max(tabulate(match(v, uniqv)))]
+}
 
 # person means 
 message(paste0("person mean states = ", round(mean(summaryComplete$tStates), 1)),
@@ -154,7 +159,7 @@ h6 = hist(baseline_data$BIS_total)
 uni.CFA <- ' unifactor =~ AES_Total + AMI_Total + FFMRF_conscientiousness + FFMRF_extraversion + MFI_Total + DASS21_Depression + DASS21_Anxiety + DASS21_Stress + FFMRF_neuroticism + SHAPS_Total'
 
 # scale vars
-data_baseVars = scale(as.data.frame(data_baseT[, 2:ncol(data_baseT)]))
+data_baseVars = scale(as.data.frame(data_baseT))
 fit <- cfa(uni.CFA, data = data_baseVars)
 
 summary(fit, fit.measures=T, standardized=T)
@@ -178,108 +183,15 @@ summary(fit, fit.measures=T, standardized=T)
 apathy_scores <- as.data.frame(cbind(baseline_data[, "user_id"], lavPredict(fit))) #Predict score (regression method)
 names(apathy_scores) = c("user_id", "apathy")
 
-# combine behavioural / self-report summary data & apathy scores
-beh_data$apathy_mean = abs(beh_data$AMI_Total)+abs(beh_data$AES_Total)/2; 
+# combine behavioural / self-report summary data & apathy scores 
 data_combined = beh_data %>%
   inner_join(dplyr::select(apathy_scores, c("user_id", starts_with(c("apathy")))), by="user_id")
   
 # check if any apathy scores are missing
 apathyCheck = data_combined %>% group_by(user_id) %>% summarise(apathy = max(apathy, na.rm=T))
 
-message(length(setdiff(unique(beh_data$user_id), apathyCheck$user_id)),' users not included in trait-apathy analysis due to incomplete quest data ')
-
-# plot the correlation matrix for items within apathy dimension
-vars=c("AES_Total", "AMI_Total", "FFMRF_conscientiousness", "FFMRF_extraversion", "MFI_Total")
-corApathy = Hmisc::rcorr(as.matrix(data_baseT[, vars]), type="spearman")
-gCorT1=ggcorrplot::ggcorrplot(corApathy$r, type="lower", p.mat=corApathy$P, sig.level =0.05, 
-                 # (3+2+1) is a bonferroni adjustment
-           method='square', lab=T, show.diag=F,
-           digits=2, lab_size=6, insig="pch",pch.col="red", pch.cex=20, hc.order=T) + 
-  # relabel for prettiness
-  scale_x_discrete(labels=c("AES", "AMI", "5F-C", "5F-E", "MFI")) +
-  scale_y_discrete(labels = c("MFI", "AES", "AMI", "5F-C", "5F-E"))+
-  labs(title="spearman rho between apathy questionnaire subscales")  +
-  # rescale the colours:
-  scale_fill_gradient2(limit = c(-0.8,0.8), breaks=c(-0.8, -0.4, 0, 0.4, 0.8), 
-                       high = "#d6604d", low =  "#4393c3", 
-                       mid = "#f7f7f7",
-                       midpoint=0, name=expression(italic("rho"))) +
-  # adjust legend text sizes, axis text sizes and reduce margins
-    theme(axis.text.x = element_text(size=18, angle = 45, vjust = 0.5, hjust=0.5),
-          axis.text.y = element_text(size=18),
-          legend.key.size = unit(1, 'cm'), 
-          legend.key.height = unit(1, 'cm'), 
-          legend.key.width = unit(1, 'cm'), 
-          legend.title = element_text(size=18), 
-          legend.text = element_text(size=16),
-          plot.margin = margin(0.01,0.01,0.01,0.01, "cm")) 
-# also see it below
-gCorT1 
-# save it
-ggsave(filename=paste0(fig_dir, "between_person_traitApathy_corrmatrix.png"), 
-       plot=gCorT1,
-       height=20, width=20,
-       units="cm", bg="white")
-
-library(ggplot2)
-library(GGally)
-library(Hmisc)
-
-
-# Variable names
-var_labels <- c("AES", "AMI", "5F-C", "5F-E", "MFI")
-
-# Step 2: Create pair plot with GGally::ggpairs
-pairplot <- ggpairs(as.data.frame(data_baseT[, vars]),
-                    lower = list(continuous = wrap("cor", method = "spearman", size = 4)),
-                    upper = list(continuous = wrap("points", alpha = 0.5, size = 2)),
-                    diag = list(continuous = wrap("densityDiag")), 
-                    columnLabels = var_labels)
-
-# Step 3: Update labels and remove axis ticks
-pairplot <- pairplot + 
-  theme_bw() + 
-  labs(title = "Trait apathy subscales") +
-  theme(
-    plot.title = element_text(size=18, hjust = 0.5),
-    axis.text.x = element_blank(),  # Remove x-axis text
-    axis.text.y = element_blank(),  # Remove y-axis text
-    axis.ticks = element_blank(),   # Remove axis ticks
-    strip.text.x = element_text(size=14, face="bold"),  # Adjust top strip text
-    strip.text.y = element_text(size=14, face="bold")   # Adjust right strip text
-  )
-
-# Step 5: Save the plot
-ggsave(filename = paste0(fig_dir, "pairplot_traitApathy_corrmatrix.png"),
-       plot = pairplot,
-       height = 20, width = 20, units = "cm", bg = "white")
-
-
-
-Apathy.CFA_nFF <- ' apathy=~ AMI_Total + AES_Total'
-
-# scale vars, then fit 
-fit_apathy2 <- cfa(Apathy.CFA_nFF, data = data_baseVars)
-# display summary
-summary(fit_apathy2, fit.measures=T, standardized=T)
-
-
-# plot 
-ggplot(data_combined, aes(x= apathy, y=AES_Total))+geom_point()+geom_smooth(method="lm") +
-  stat_cor(method="pearson")
-
-ggplot(data_combined, aes(x=apathy, y=AMI_Total))+geom_point()+geom_smooth(method="lm") +
-  stat_cor(method="pearson")
-
-ggplot(data_combined, aes(x=apathy, y=FFMRF_conscientiousness))+geom_point()+geom_smooth(method="lm") +
-  stat_cor(method="pearson")
-
-ggplot(data_combined, aes(x=apathy, y=FFMRF_extraversion))+geom_point()+geom_smooth(method="lm") +
-  stat_cor(method="pearson", cor.coeff.name=c("R"))
-
-# determine number of factors with parallel analysis 
-HornParan=paran::paran(data_baseT[, vars], iterations=2000, centile=95)
-number_factors=HornParan$Retained
+message(length(setdiff(unique(beh_data$user_id), apathyCheck$user_id)),' 
+        users not included in trait-apathy analysis due to incomplete quest data ')
 
 ```
 
@@ -427,8 +339,8 @@ gCor1=ggcorrplot::ggcorrplot(corBS$r, type="lower", p.mat=corBS$P, sig.level = 0
            method='square', lab=T, show.diag=F,
            digits=2, lab_size=6, insig="pch",pch.col="red", pch.cex=20, hc.order=T) + 
   # relabel for prettiness
-  scale_x_discrete(labels=c("Sleep", "Motivation", "Happiness")) +
-  scale_y_discrete(labels = c("Fatigue", "Sleep", "Motivation")) +
+  scale_x_discrete(labels=c("Sleep quality", "Motivation", "Happiness")) +
+  scale_y_discrete(labels = c("Fatigue", "Sleep quality", "Motivation")) +
   labs(title="based on 15-day person mean states")  +
   # rescale the colours:
   scale_fill_gradient2(limit = c(-0.8,0.8), breaks=c(-0.8, -0.4, 0, 0.4, 0.8), 
@@ -436,15 +348,13 @@ gCor1=ggcorrplot::ggcorrplot(corBS$r, type="lower", p.mat=corBS$P, sig.level = 0
                        mid = "#f7f7f7",
                        midpoint=0, name=expression(italic("rho"))) +
   # adjust legend text sizes, axis text sizes and reduce margins
-    theme(axis.text.x = element_text(size=18, angle = 45, vjust = 0.75, hjust=0.75),
+    theme(axis.text.x = element_text(size=18, angle = 45, vjust = 0.5, hjust=0.5),
           axis.text.y = element_text(size=18),
-          axis.title = element_text(size=18),
-          legend.position='none',
-          # legend.key.size = unit(1, 'cm'), 
-          # legend.key.height = unit(1, 'cm'), 
-          # legend.key.width = unit(1, 'cm'), 
-          # legend.title = element_text(size=18), 
-          # legend.text = element_text(size=16),
+          legend.key.size = unit(1, 'cm'), 
+          legend.key.height = unit(1, 'cm'), 
+          legend.key.width = unit(1, 'cm'), 
+          legend.title = element_text(size=18), 
+          legend.text = element_text(size=16),
           plot.margin = margin(0.01,0.01,0.01,0.01, "cm")) 
 # also see it below
 gCor1 
@@ -520,7 +430,7 @@ pTrajectoryM_overlayCol = day_means %>% group_by(user_id, weekday) %>%
   stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="errorbar",size=1.25, alpha=0.8) +
   stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="line",size=1.25, alpha=0.8) +
   labs(x="", 
-       y="State motivation") +
+       y="State Motivation") +
    theme_classic(base_size=24) + 
   scale_x_continuous(limits=c(0.75,7.25), breaks=seq(1,7,1), 
                      labels=unique(day_means$weekday)) +
@@ -543,7 +453,7 @@ pTrajectoryM_overlayCol2 = day_means %>% group_by(user_id, weekday) %>%
   stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="errorbar",size=1.25, alpha=0.8) +
   stat_summary_bin(aes(x=as.numeric(weekday)), fun.data=mean_se, geom="line",size=1.25, alpha=0.8) +
   labs(x="weekday", 
-       y="State motivation") +
+       y="State Motivation") +
    theme_classic(base_size=38) + 
   scale_x_continuous(limits=c(0.75,7.25), breaks=seq(1,7,1), 
                      labels=unique(day_means$weekday)) +
@@ -598,14 +508,13 @@ pWK<- ggplot(wk_summary, aes(x = week_split, y = mean_state, fill = week_split),
   geom_line(aes(group=user_id), linetype = 3, linewidth=0.25) +
   scale_color_manual(values=c("#fcd8b3", "#fba834")) +
   scale_fill_manual(values=c("#fcd8b3", "#fba834"))+ 
-  theme_classic(base_size=28) +
-  labs(y="State motivation", x="") +
+  theme_classic(base_size=24) +
+  labs(y="State Motivation", x="") +
   geom_signif(
     comparisons = list(c("Mon-Wed", "Thurs-Sun")),
     map_signif_level = TRUE, textsize = 14,     margin_top = 0.15,
   ) + guides(fill = FALSE, colour = FALSE)  + 
-  scale_y_continuous(limits=c(-1,1), breaks=seq(-1,1,0.5), labels=c("-1", "-0.5", "0", "0.5", "1")) #+
- # theme(axis.text.x =element_text(size=28)) + 
+  scale_y_continuous(limits=c(-1,1), breaks=seq(-1,1,0.5), labels=c("-1", "-0.5", "0", "0.5", "1"))
 
 
 # a version of this plot which is bigger for presentations 
@@ -692,8 +601,8 @@ plot_ACF_combined_wD= ggplot()+
              size=1.25, width=0, alpha=0.9) +
   # geom_ribbon(data = ef1, aes(x = zLTotal, ymin = fit - se, ymax = fit + se, fill=apathy),
   #             size=0.8, width=0.2, alpha=0.75) +
-  labs(y = "State later that day",
-       x = "State earlier that day", #color = "Trait Apathy",
+  labs(y = "state later that day",
+       x = "state earlier that day", #color = "Trait Apathy",
        color = "Trait apathy") +
   scale_color_manual(values = c('#6489a5', '#004c6d'),
                        labels = c("-1 SD", "+1 SD")) +
@@ -817,18 +726,17 @@ library(ggpubr)
 # create summary data for state motivation 
 combined_base = data_combined %>% 
   # calculate mean & sd
-  EMA_calc_mean(c("Total", "zTotal", "BA", "SM"), expand_op=T) %>% 
+  EMA_calc_mean(c("Total", "zTotal"), expand_op=T) %>% 
   # caclulate variability: MSSD, RMSSD
-  calc_variability(c("Total", "zTotal", "BA", "SM"), 
+  calc_variability(c("Total", "zTotal"), 
                    base_vars=c("AES_Total", "apathy", "Age"), log=T,
                    entropy=F) %>%
+  # normalise age between subjects
+  normalise_predictors(predictors=c("Age"), between=1, drop=F) %>%
   # add sex 
   inner_join(select(data_combined, c("user_id", "Sex")), by="user_id") %>%
   # join with acf estimates
-  inner_join(select(data_acf, c("user_id", "ylag1")), by="user_id") %>% 
-  normalise_predictors(predictors=c("Age"), between=1) %>%
-  unique()
-  
+  inner_join(select(data_acf, c("user_id", "ylag1")), by="user_id") %>% unique()
 
 
 
@@ -855,7 +763,7 @@ State_mean = combined_base %>%
              label.y = max(combined_base$mTotal, na.rm=T)*0.925, size=6,
            label.sep='\n', cor.coef.name="rho",
            p.accuracy = 0.001, r.accuracy = 0.01) +
-  labs(x="Trait apathy (day 0)", y="Motivation mean") +
+  labs(x="Trait apathy", y="Motivation mean") +
   theme_classic(base_size=24) + theme(legend.position="none") 
 
 # save a version of the state mean figure 
@@ -874,7 +782,7 @@ State_sd = combined_base %>%
              label.y = max(combined_base$sdTotal, na.rm=T)*0.925, size=6,
            label.sep='\n', cor.coef.name="rho",
            p.accuracy = 0.01, r.accuracy = 0.01) +
-  labs(x="Trait apathy (day 0)", y="Motivation SD") +
+  labs(x="Trait apathy", y="Motivation SD") +
   theme_classic(base_size=24) + theme(legend.position="none") 
 
 # plot RMSSD total motivation & trait apathy
@@ -912,24 +820,6 @@ res.mean = glm_base(combined_base, y=c("sdTotal", "Total_RMSSD", "ylag1"),
 
 # no 
 summary(res.mean[[1]])
-
-# check the correlation between extraversion and conscientiousness
-# add FMRF, and MFI 
-combined_base_traits = inner_join(combined_base, as.data.frame(data_baseT), by="user_id")
-
-res.State_F5c =glm_base(combined_base_traits, y=c("mTotal", "mBA","mSM"),
-                        x=c("FFMRF_conscientiousness"))
-summary(res.State_F5c$mTotal)
-summary(res.State_F5c$mBA)
-summary(res.State_F5c$mSM)
-
-res.State_F5e =glm_base(combined_base_traits, y=c("mTotal", "mBA","mSM"),
-                        x=c("FFMRF_extraversion"))
-summary(res.State_F5e$mTotal)
-summary(res.State_F5e$mBA)
-summary(res.State_F5e$mSM)
-
-
 ```
 
 
@@ -991,13 +881,13 @@ pSuccessR_sess = summarySuccess %>%
   #guides(fill="Day", color=F) + 
   labs(x= "", y="P(success)", fill="Day", color="Day")+ 
   theme(legend.position=c(0.6, 0.5),
-        legend.title = element_text(size=28),
-        legend.text = element_text(size=28),
-        axis.text.x = element_blank(), axis.text.y=element_text(size=28),
+        legend.title = element_text(size=18),
+        legend.text = element_text(size=18),
+        axis.text.x = element_blank(),
         axis.ticks.x = element_blank()) +
-  scale_y_continuous(
-  breaks = c(0.7, 0.8, 0.9, 1),
-  labels = c("0.7", "0.8", "0.9", "1"), limits=c(0.65,1))
+    scale_y_continuous(breaks=c(0.6, 0.7, 0.8, 0.9, 1), limits=c(0.6,1), 
+                     labels=c("0.6", "0.7", "0.8", "0.9", "1"))
+
 
 ```
 
@@ -1099,7 +989,7 @@ pChoiceFunc=summaryChoice %>% filter(!deltaReward==0) %>%
   stat_summary(fun=mean, geom="line", size=1, alpha=0.7) +
   stat_summary(fun.data=mean_se, geom="errorbar", width = 0.3, size=2, alpha=0.7) +
   geom_jitter(width=0.1, size=8, shape=20, alpha=0.4, show.legend = F)+
-  ylab("P(harder option)") + xlab("\U0394 effort") +
+  ylab("P(higher effort)") + xlab("\U0394 effort") +
   labs(color="\U0394 reward", fill="\U0394 reward")+
   theme_classic(base_size=36) + theme(legend.position="right") +
   scale_color_manual(values=cbp2[6:9], labels=c("+1", "+2", "+3")) + scale_size(range = c(0.8, 2.4)) +
@@ -1164,12 +1054,9 @@ pCalib = calib_long %>%
            label.y = 1.5,
            label.sep='\n', cor.coef.name="r",
            p.accuracy = 0.001, r.accuracy = 0.01, size=7) +
-  labs(y="Follow-up max effort (%)", x="Initial max effort (%)") +
-  theme_classic(base_size=25) +
-  scale_x_continuous(
-  breaks = c(0,50,100), limits=c(0,100))+
-  scale_y_continuous(
-  breaks = c(0,50,100), limits=c(0,100))
+  labs(y="follow-up max effort (%)", x="initial max effort (%)") +
+  theme_classic(base_size=24) +
+  ylim(0,100) + xlim(0,100)
 
 # save it
 ggsave(filename=paste0(fig_dir, "effort_calibration_mean_normalised.png"), 
@@ -1180,7 +1067,7 @@ ggsave(filename=paste0(fig_dir, "effort_calibration_mean_normalised.png"),
 
 # calculate proportion of trials which exceeded threshold, with some offset to allow 
 # for "ensuring" getting enough presses in 
-exceeded = calcThresholdExceeded(long_data,secOffset=0.5)
+exceeded = calcThresholdExceeded(long_data,secOffset=1)
 ```
 
 
@@ -1307,7 +1194,7 @@ pTR0_icc = ggplot(icc_df, aes(x = as.factor(behaviour), fill=as.factor(behaviour
                               "#6fa1c5")) +
     scale_color_manual(values=c("#004c6d",
                               "#6fa1c5")) +
-  theme_classic(base_size=28) + theme(axis.text.x=element_text(angle=-30))+
+  theme_classic(base_size=24) + theme(axis.text.x=element_text(angle=-30))+
   labs(y="ICC", x="") + 
   scale_x_discrete(limits=c("vigour", "choice"), 
                    labels=c("vigour", "choices")) + theme(legend.position="none") +
@@ -1319,7 +1206,7 @@ pTR1 = ggplot(summaryTRT, aes(x=mHigherEff_0, y=mHigherEff_2))+
   geom_jitter(size=3, aes(alpha=0.5), shape=1, width=0.025, height=0.025) + 
   geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
   labs(x="Baseline", y="Day 2") +
-  theme_classic(base_size=28) + theme(legend.position="none") +
+  theme_classic(base_size=24) + theme(legend.position="none") +
   scale_x_continuous(breaks=c(0, 0.5, 1), limits=c(0,1), 
                      labels=c("0", "0.5", "1")) + 
   scale_y_continuous(breaks=c(0,0.5, 1),limits=c(0,1),labels=c("0", "0.5", "1"))  
@@ -1329,7 +1216,7 @@ pTR2 = ggplot(summaryTRT, aes(x=mHigherEff_0, y=mHigherEff_14))+
   geom_jitter(size=3, aes(alpha=0.5), shape=1, width=0.025, height=0.025) + 
   geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
   labs(x="Baseline", y="Day 14") +
-  theme_classic(base_size=28) + theme(legend.position="none") +
+  theme_classic(base_size=24) + theme(legend.position="none") +
   scale_x_continuous(breaks=c(0, 0.5, 1), limits=c(0,1),
                      labels=c("0", "0.5", "1")) + 
   scale_y_continuous(breaks=c(0,0.5, 1), limits=c(0,1),labels=c("0", "0.5", "1"))  
@@ -1339,7 +1226,7 @@ pTR3 = ggplot(summaryTRT, aes(x=mHigherEff_2, y=mHigherEff_14))+
   geom_jitter(size=3, aes(alpha=0.5), shape=1, width=0.025, height=0.025) + 
   geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
   labs(x="Day 2", y="Day 14") +
-  theme_classic(base_size=28) + theme(legend.position="none") +
+  theme_classic(base_size=24) + theme(legend.position="none") +
   scale_x_continuous(breaks=c(0, 0.5, 1), limits=c(0,1),
                      labels=c("0", "0.5", "1")) + 
   scale_y_continuous(breaks=c(0,0.5, 1), limits=c(0,1),labels=c("0", "0.5", "1"))  
@@ -1358,7 +1245,7 @@ data_beh = data_combined %>%
   filter(user_id %in% completion$user_id)
 
 # save beh data with apathy-CFA for later use
-#write.csv(data_beh, file=paste0(task_data_dir, "csv/behavioural_data_CFA_anon.csv"))
+write.csv(data_beh, file=paste0(task_data_dir, "csv/behavioural_data_CFA_anon.csv"))
 
 # linear model (no hierarchy)
 lm = lm(DeltaEffortChosen~ zTotal*apathy +  zAge + Sex, data=data_beh)
@@ -1406,341 +1293,66 @@ summary(mME_rs)$varcor
 ```
 
 
-
 # logistic model 
 run the same model on trial level probability of making choice 
 not reported in results (shows the same thing)
-in pub, this analysis is now figure 5 
 ```{r, mixed_logistic_model}
 # # bind the states motivation with long data 
 long_data_EMA = inner_join(long_data, select(data_combined, 
                                              all_of(c("user_id", "sess", "zTotal", "apathy", "zAge", "Sex"))),
                             by=c("user_id", "sess")) %>%
-     filter(user_id %in% summaryComplete$user_id[summaryComplete$tGames >=minSess]) %>%
-  mutate(choice01=recode(choice, "route 1"=0, "route 2"=1),
-         effortChosen = ifelse(choice=="route 1", trialEffortPropMax1, trialEffortPropMax2),
-         effortUnchosen = ifelse(choice=="route 1", trialEffortPropMax2, trialEffortPropMax1),
-         highEffortOption = pmax(trialEffortPropMax1, trialEffortPropMax2),
-         highRewardOption = pmax(trialReward1, trialReward2),
-         lowEffortOption = pmin(trialEffortPropMax1, trialEffortPropMax2),
-         lowRewardOption = pmin(trialReward1, trialReward2),
-         deltaEffortH = highEffortOption-lowEffortOption,
-         deltaRewardH = highRewardOption-lowRewardOption,
-         deltaEffortChosen = effortChosen - effortUnchosen,
-         rewardChosen = ifelse(choice=="route 1", trialReward1, trialReward2),
-         rewardUnchosen = ifelse(choice=="route 1", trialReward2, trialReward1),
-         deltaRewardChosen = rewardChosen - rewardUnchosen) 
+     filter(user_id %in% summaryComplete$user_id[summaryComplete$tGames >=minSess]) 
 
-  # normalise deltas on trials within subjects
-vars=c("deltaReward", "deltaEffort")
-long_data_EMA = normalise_predictors(long_data_EMA, 
-                                     predictors=vars, between=0) 
-
-# check correlation
-cor.test(long_data_EMA$zdeltaReward, long_data_EMA$zdeltaEffort)
-
-
-# model predicting p(harder option) main effects of task and their interaction, state*trait interaction
-log_ME_values_int = lme4::glmer(as.factor(higherEffChosen) ~zdeltaReward*zdeltaEffort+
-                              zTotal*apathy + (1 | user_id), 
-                      data = long_data_EMA, family = binomial, 
-                      control = glmerControl(optimizer="bobyqa"),
+# # fit the logistic version 
+log_ME = lme4::glmer(as.factor(higherEffChosen) ~ zTotal*apathy + (1 | user_id), 
+                      data = long_data_EMA, family = binomial, control = glmerControl(optimizer = "bobyqa"),
                       nAGQ = 1)
  
-summary(log_ME_values_int)
-# get the confidence intervals 
-round(fixef(log_ME_values_int), 2)
-round(confint(log_ME_values_int,method="Wald"),2)
+summary(log_ME)
 
-# get the coefficients manually
-coeff <- as.data.frame(summary(log_ME_values_int)$coefficients)
+# Extract the fixed effects coefficients
+coef_summary <- summary(log_ME)$coefficients
+
 # Calculate odds ratios and their confidence intervals
-coeff$Var = factor(rownames(coeff), levels=c("(Intercept)", "zdeltaReward", "zdeltaEffort", 
-                                             "zdeltaReward:zdeltaEffort", "zTotal", "apathy",
-                                             "zTotal:apathy"))
-coeff <- coeff[order(coeff$Var), ]
-coeff$OR = exp(coeff$Estimate)
-coeff$OR_sem = exp(coeff$`Std. Error`)
-# adjust names for ease
-names(coeff)=c("Estimate", "SEM", "t", "p", "var", "OR", "OR_SEM")
-coeff=filter(coeff, var!="(Intercept)")%>% convertPvalue("p")
+odds_ratios <- exp(coef_summary[, "Estimate"])
+p_val = coef_summary[, "Pr(>|z|)"]
 
-# separate model with state*reward and state*effort interaction 
-# separate because these small effects could not possibly survive amongst the others
-log_ME_values_int_state = lme4::glmer(as.factor(higherEffChosen) ~ zTotal:zdeltaReward +
-                              zTotal:zdeltaEffort +
-                       (1  + zTotal | apathy), 
-                      data = long_data_EMA, family = binomial, 
-                      control = glmerControl(optimizer="bobyqa"),
-                      nAGQ = 1)
- 
-summary(log_ME_values_int_state)
-# get the confidence intervals 
-round(fixef(log_ME_values_int_state), 2)
-round(confint(log_ME_values_int_state,method="Wald"),2)
-# plot the coefficients manually: interaction effects
-coeff_int <- as.data.frame(summary(log_ME_values_int_state)$coefficients)
-# Calculate odds ratios and their confidence intervals
-coeff_int$Var = factor(rownames(coeff_int), levels=c("zTotal:zdeltaReward", "zTotal:zdeltaEffort"))
-coeff_int$OR = exp(coeff_int$Estimate)
-coeff_int$OR_sem = exp(coeff_int$`Std. Error`)
-# adjust names for ease
-names(coeff_int)=c("Estimate", "SEM", "t", "p", "var", "OR", "OR_SEM")
-coeff_int=filter(coeff_int, !is.na(var))%>% convertPvalue("p")
-# combine the two into one df 
-coeff_comb = rbind(coeff, coeff_int)
-# put these together in a single figure
-figLogME_coeff1=ggplot(coeff_comb, aes(x=var, y=Estimate, fill=as.factor(var))) + geom_bar(stat="identity", color="black", position=position_dodge(), size=0.9) +
-    geom_errorbar(aes(ymin=Estimate-SEM, ymax=Estimate+SEM), width=.2,position=position_dodge(.9),size=0.6) +
-   # Highlight last 3 x positions with a shaded area
-  annotate("rect", xmin=6.5, xmax=8.5, ymin=-1, ymax=1.3, alpha=0.4, fill="darkgray") +
-      # add significance manually
-  annotate("text", y = c(1.25, rep(0.6, each=7)), x=1:8, label = coeff_comb$sig, size=6) +
-   scale_x_discrete(labels=c("\U0394 Reward", "\U0394 Effort", "\U0394 Reward*Effort", 
-                            "State", "Trait Apathy", "State*Trait", 
-                            "State*\U0394 Reward", "State*\U0394 Effort")) +
-  scale_fill_manual(values=c("#488f31", "#de425b", "#f1f1f1", "#004c6d", "#457393", "#779dba",
-                             "#8fbc7b", "#f49097")) + 
-    theme_classic(base_size=18)+theme(legend.position="none",
-                                    # rotate tick labels
-                                    axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
-    labs(x="") + 
-    scale_y_continuous(
-      name = "\U03B2 for P(harder option)", breaks=c(-1, -0.5, 0, 0.5, 1, 1.5), 
-      labels=c("-1", "-0.5", "0", "0.5", "1","1.5"),
-    limits=c(-1,1.3),
-    sec.axis = sec_axis(
-      ~.*0.1, 
-      name = "State interaction",
-      breaks = c( -0.01, 0, 0.01), 
-      labels=c("-.01", "0", ".01"),
-    )) 
-  
-# save   
-ggsave(filename=paste0(manuscript_figs, "PNAS_resize/figure5.tiff"), 
-       plot=figLogME_coeff1,
-       height=15, width=15,
-       units="cm", bg="white", compression = "lzw")
+# Predict probabilities over the range of zTotal
+zTotal_range <- seq(min(long_data_EMA$zTotal), max(long_data_EMA$zTotal), length.out = 100)
+apathy_levels <- unique(long_data_EMA$apathy)
 
+
+# Bin the zTotal values and calculate the proportion of higherEffChosen in each bin
+binned_data <- long_data_EMA %>%
+  mutate(zTotal_bin = cut(zTotal, breaks = 5)) %>% group_by(zTotal_bin) %>%
+  summarise(prop_higherEffChosen = mean(higherEffChosen, na.rm = TRUE),
+            sem_higherEffChosen = sd(higherEffChosen, na.rm=T)/sqrt(n())) %>% ungroup()
+
+# Plot the summarized data with the predicted probabilities
+ggplot(binned_data, aes(x = zTotal_bin, y = prop_higherEffChosen)) +
+  geom_point(size = 3, color = "blue") +
+  geom_errorbar(aes(ymin = prop_higherEffChosen - sem_higherEffChosen, 
+                    ymax = prop_higherEffChosen + sem_higherEffChosen), 
+                width = 0.2, color = "blue") +
+  geom_line(aes(group = 1), color = "blue", size = 1) +
+  labs(
+    x = "State motivation",
+    y = "P(higher effort)",
+    title="Effect of state on P(higher effort)"
+  ) +
+  theme_classic(base_size = 15) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+  ) +
+  scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
+  annotate(geom="text",
+           x = 1.5, y=0.85, 
+           label=sprintf('Odds ratio = %.2g \n p < 0.001', odds_ratios[2]), size=6)
 
 
 
 ```
-
-
-
-# anova: state ~ options 
-supplementary post-hoc testing
-```{r, anova_state_options}
-# summarise the data by session over all trials
-summaryChoiceDelta = long_data_EMA %>%
-  # bin data 
-  mutate(deltaEffort = abs(trialEffortPropMax1-trialEffortPropMax2)*100,
-      deltaEffortB = as.factor(ifelse(deltaEffort<=20,"+20%",
-                               ifelse(deltaEffort<=40,"+40%", "+60%"))),
-         deltaRewardB = as.factor(abs(trialReward1-trialReward2))) %>% 
-  group_by(subID, sess, deltaRewardB, deltaEffortB) %>%
-  summarise(mean_Peffort = mean(higherEffChosen, na.rm=T),
-            se_Peffort = sd(higherEffChosen, na.rm=T)/sqrt(n()), 
-            mean_state=mean(zTotal, na.rm=T),
-            apathy=apathy[1]) %>% 
-  filter(!deltaRewardB==0) %>% ungroup()
-
-
-lmR = lm(mean_Peffort ~ deltaRewardB:mean_state, data = summaryChoiceDelta)
-summary(lmR)
-# Get estimated marginal means for the interaction
-# set marginal mean levels to compare
-marginal_levels = c(-2, 2)
-library(emmeans)
-emmeans_resRew <- emmeans(lmR,
-                           ~deltaRewardB:mean_state,
-                          at = list(mean_state = marginal_levels))
-# compare only the state pairs
-state_pairs = summary(pairs(emmeans_resRew, simple="mean_state"), 
-                      adjust="Bonferroni") %>%
-  convertPvalue() %>% mutate_if(is.numeric, round, 4) 
-
-
-emmeans_dfrANOVA <- as.data.frame(emmeans_resRew)
-# plot
-pEM_rewAN2 = ggplot(emmeans_dfrANOVA, aes(x = factor(deltaRewardB), y = emmean,
-                                   fill = factor(mean_state), 
-                                   group = interaction(deltaRewardB, factor(mean_state)))) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +  # grouped bars
-  geom_errorbar(aes(ymin=emmean-SE, ymax=emmean+SE), 
-                position = position_dodge(width = 0.8), width = 0.1) +
-  labs(x = "\U0394 Reward", y = "\U03B2 P(harder option)", 
-       fill = "zTotal", color = "delta Reward", 
-       title = "") +
-  theme_minimal(base_size = 24) +
-  theme(legend.position = "top") + 
-  scale_fill_manual(values = c("#488f31", "#a1dc88"), labels=c("low","high"), name="State") +
-  # reward=1
-   geomPlotManualSig(x = 0.9, xend = 1.1, y = 0.95, 
-                     label = state_pairs$sig[1])+
-  # #  reward=2
-   geomPlotManualSig(x = 1.9, xend = 2.1, y = 0.95, 
-                     label = state_pairs$sig[2])
-
-
-# reward-apathy
-# Get estimated marginal means for the interaction
-choiceDelta_trait = summaryChoiceDelta %>%
-  group_by(subID, deltaRewardB, deltaEffortB) %>%
-  summarise(mean_Peffort = mean(mean_Peffort, na.rm=T),
-            se_Peffort = sd(mean_Peffort, na.rm=T)/sqrt(n()), 
-            apathy=apathy[1]) %>% ungroup()
-
-lmR_ap = lm(mean_Peffort ~ deltaRewardB:apathy, data = choiceDelta_trait)
-
-emmeans_resRewApathy <- emmeans(lmR_ap, 
-                          ~ deltaRewardB:apathy,
-                          at = list(apathy = marginal_levels))
-# compare only the state pairs
-state_pairs = summary(pairs(emmeans_resRewApathy, simple="apathy")) %>%
-  convertPvalue()
-emmeans_dfrANOVA <- as.data.frame(emmeans_resRewApathy)
-
-# plot
-pEM_rewAN_apathy = ggplot(emmeans_dfrANOVA, aes(x = factor(deltaRewardB), y = emmean,
-                                   fill = factor(apathy), group = interaction(deltaRewardB, factor(apathy)))) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +  # Create grouped bars
-  geom_errorbar(aes(ymin=emmean-SE, ymax=emmean+SE), position = position_dodge(width = 0.8), width = 0.1) +
-  labs(x = "\U0394 Reward", y = "\U03B2 P(harder option)", 
-       fill = "Apathy", color = "delta Reward", 
-       title = "") +
-  theme_minimal(base_size = 24) +
-  theme(legend.position = "top") + 
-   scale_fill_manual(values = c("#488f31", "#a1dc88"), labels=c("low","high"), name="Trait (apathy)")  +
-    # reward=1
-   geomPlotManualSig(x = 0.9, xend = 1.1, y = 1, 
-                     label = state_pairs$sig[1])+
-  # #  reward=2
-   geomPlotManualSig(x = 1.9, xend = 2.1, y = 1, 
-                     label = state_pairs$sig[2]) +
-  # reward=3
-    geomPlotManualSig(x = 2.9, xend = 3.1, y = 1, 
-                     label = state_pairs$sig[3]) 
-
-## EFFORT 
-# model for effort 
-lmE = lm(mean_Peffort ~ deltaEffortB:mean_state, data = summaryChoiceDelta)
-
-emmeans_resEff <- emmeans(lmE, 
-                          ~ deltaEffortB:mean_state,
-                          at = list(mean_state = c(-2,2)))
-
-# compare only the state pairs
-state_pairs = summary(pairs(emmeans_resEff, simple="mean_state", adjust="none")) %>%
-  convertPvalue() %>% mutate_if(is.numeric, round, 4)
-
-
-emmeans_dfeANOVA <- as.data.frame(emmeans_resEff)
-
-pEM_effAN2 = ggplot(emmeans_dfeANOVA, aes(x = factor(deltaEffortB), y = emmean,
-                                   fill = factor(mean_state), group = interaction(deltaEffortB, factor(mean_state)))) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +  # Create grouped bars
-  geom_errorbar(aes(ymin=emmean-SE, ymax=emmean+SE), position = position_dodge(width = 0.8), width = 0.1) +
-  labs(x = "\U0394 Effort", y = "\U03B2 P(harder option)", 
-       fill = "zTotal", color = "delta Effort", 
-       title = "") +
-  theme_minimal(base_size = 24) +
-  theme(legend.position = "top") +
-  scale_fill_manual(values = c("#de425b", "#ffb0ba"), labels=c("low","high"), name="State") +
-      # effort=20
-   geomPlotManualSig(x = 0.9, xend = 1.1, y = 1, 
-                     label = state_pairs$sig[1])+
-  # #  effort=40
-   geomPlotManualSig(x = 1.9, xend = 2.1, y = 1, 
-                     label = state_pairs$sig[2]) +
-  # effort=60
-    geomPlotManualSig(x = 2.9, xend = 3.1, y = 1, 
-                     label = state_pairs$sig[3]) 
-# effort-apathy 
-lmE_ap = lm(mean_Peffort ~ deltaEffortB:apathy, data = choiceDelta_trait)
-
-emmeans_resEffApathy <- emmeans(lmE_ap, 
-                          ~deltaEffortB:apathy,
-                          at = list(apathy = c(marginal_levels)))
-state_pairs = summary(pairs(emmeans_resEffApathy, simple="apathy", 
-                            adjust="none")) %>%
-  convertPvalue() 
-
-emmeans_dfeANOVA <- as.data.frame(emmeans_resEffApathy)
-
-# plot
-pEM_effAN_apathy = ggplot(emmeans_dfeANOVA, aes(x = factor(deltaEffortB), y = emmean,
-                                   fill = factor(apathy), group = interaction(deltaEffortB, factor(apathy)))) +
-  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +  # Create grouped bars
-  geom_errorbar(aes(ymin=emmean-SE, ymax=emmean+SE), position = position_dodge(width = 0.8), width = 0.1) +
-  labs(x = "\U0394 Effort", y = "\U03B2 P(harder option)", 
-       fill = "Apathy",
-       title = "") +
-  theme_minimal(base_size = 24) +
-  theme(legend.position = "top") +
-   scale_fill_manual(values = c("#de425b", "#ffb0ba"), labels=c("low","high"), name="Trait (apathy)") + 
-   #  # effort 1 apathy low-high
-      geomPlotManualSig(x = 0.9, xend = 1.1, y = 1, 
-                      label = state_pairs$sig[1])+
-  # effort 2, apathy low high
-  geomPlotManualSig(x = 1.9, xend = 2.1, y = 1, 
-                      label = state_pairs$sig[2]) +
-  geomPlotManualSig(x = 2.9, xend = 3.1, y = 1, 
-                    label = state_pairs$sig[3])
-
-# # Extract legends using cowplot
-# legend_state <- get_legend(
-#   pEM_effAN2)
-# 
-# legend_trait <- get_legend(pEM_effAN_apathy)
-# 
-# # Arrange the plots and legends using patchwork
-# final_plot <- (
-#     (pEM_rewAN2 + theme(legend.position = "none") +  # Suppress the legend here
-#      plot_spacer()) /
-#   (pEM_effAN2 + theme(legend.position = "none") +  # Suppress the legend here
-#      plot_spacer()) /
-#   (pEM_rewAN_apathy + theme(legend.position = "none")  + plot_spacer()) / 
-# 
-#   (pEM_effAN_apathy + theme(legend.position = "none")  + plot_spacer())
-# ) + plot_layout(guides = "collect") +
-#   plot_annotation(
-#     theme = theme(
-#       plot.margin = margin(10, 10, 10, 10)
-#     )
-#   )
-# 
-# # Add legends above or below
-# final_plot_with_legend <- wrap_plots(legend_state, final_plot, legend_trait, ncol = 1, heights = c(0.1, 1, 0.1))
-# 
-# library(cowplot)
-
-
-
-```
-
-
-
-# vigour
-did state change response vigour
-```{r, choice_rt}
-
-# # invert mean press lag to represent vigour 
-max_lag <- max(long_data_EMA$meanPressLag, na.rm = TRUE)  # Get the maximum value of meanPressLag
-long_data_EMA = long_data_EMA %>% 
-  mutate(vigour = max(meanPressLag, na.rm=T)-meanPressLag) 
-
-mME_vigour = lmerTest::lmer(vigour~  zTotal*apathy   +
-                                (1|subID),
-                            data=long_data_EMA,
-                           REML=F)
-summary(mME_vigour)
-round(confint(mME_vigour, method="Wald"), 2)
-round(fixef(mME_vigour),2)
-
-```
-
 
 # model checks (linear models)
 ```{r, model_checks}
@@ -1771,6 +1383,61 @@ compPlot=plot(performance::compare_performance(model1, model2, model3, model4,
               legend.cex=0.1)
 
 
+
+```
+
+
+# random effects
+```{r, random_effects}
+
+# link between apathy nd random intercept; should be strong and negative 
+
+Cond_DF2 <- as.data.frame(ranef(mME_rs)) 
+  
+# extract random effects 
+re = ranef(mME_rs)$user_id 
+re <- re %>%
+  tibble::rownames_to_column(var="user_id") %>%
+  mutate(user_id = as.numeric(user_id))  %>%
+  dplyr::rename("Intercept"="(Intercept)", 
+                "state" = "zTotal") %>%
+  dplyr::inner_join(apathyCheck, by="user_id")
+
+
+# plot correlation 
+int_apathy = re %>%
+  ggplot(aes(x=apathy , y=Intercept)) +
+  geom_point(size=4, aes(alpha=0.8)) + 
+  #geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+  stat_cor(method = "spearman", label.x = max(re$apathy, na.rm=T)*0.5, 
+             label.y = max(re$Intercept, na.rm=T)*0.925, size=6,
+           label.sep='\n', cor.coef.name="rho",
+           p.accuracy = 0.001, r.accuracy = 0.01) +
+  labs(x="Trait apathy", y="choice intercept") +
+  theme_classic(base_size=24) + theme(legend.position="none") 
+
+# save a version of the state mean figure 
+ggsave(filename=paste0(fig_dir, "RE_int_apathy.png"), 
+       height=25, width=25,
+       units="cm", bg="white")
+
+
+# plot correlation 
+slope_apathy = re %>%
+  ggplot(aes(x=apathy , y=state)) +
+  geom_point(size=4, aes(alpha=0.8)) + 
+  #geom_smooth(method="lm", se=F, alpha=0.4, color="black") +
+  stat_cor(method = "spearman", label.x = max(re$apathy, na.rm=T)*0.5, 
+             label.y = max(re$state, na.rm=T)*0.925, size=6,
+           label.sep='\n', cor.coef.name="rho",
+           p.accuracy = 0.001, r.accuracy = 0.01) +
+  labs(x="Trait apathy", y="state-choice slope") +
+  theme_classic(base_size=24) + theme(legend.position="none") 
+
+# save a version of the state mean figure 
+ggsave(filename=paste0(fig_dir, "RE_slope_apathy.png"), 
+       height=25, width=25,
+       units="cm", bg="white")
 
 ```
 
@@ -1870,25 +1537,22 @@ t.tests <- beta_df %>%
 # %>%
 
 # plot without the intercept
-my_colors <- RColorBrewer::brewer.pal(3, "Blues")[2:3]
-
 pPE_wO_int = beta_df %>%
   pivot_longer(cols=c("Practice", "State"), names_to="coefficient", values_to="value") %>%
   ggplot(aes(x=as.factor(coefficient), y=value, fill=coefficient)) +
-  geom_flat_violin(position = position_nudge(x = .2, y = 0), adjust = 1.5, trim = FALSE, alpha = .9, colour = NA) +
+  geom_flat_violin(position = position_nudge(x = .1, y = 0), adjust = 1.5, trim = FALSE, alpha = .7, colour = NA) +
   geom_jitter(aes(colour = coefficient),
-             position = position_jitter(width = .1), size = 8, shape = 20, alpha=0.5) +
-  geom_boxplot(outlier.shape = NA, alpha = .75, width = .1, position = position_nudge(x = -.2, y = 0)) +
+             position = position_jitter(width = .05), size = 4, shape = 20, alpha=0.75) +
+  geom_boxplot(outlier.shape = NA, alpha = .5, width = .1) +
   #geom_line(aes(group=user_id), linetype = 3) +
-  #geom_line(stat="summary", size=1, alpha=0.8) +
-  scale_colour_manual(values = RColorBrewer::brewer.pal(3, "Blues")[2:3])+
-  scale_fill_manual(values = RColorBrewer::brewer.pal(3, "Blues")[2:3]) + 
-  theme_classic(base_size=38) + theme(legend.position="none")+
+  geom_line(stat="summary", size=1, alpha=0.8) +
+  scale_colour_brewer(palette = "Blues")+
+  scale_fill_brewer(palette = "Blues") + theme_classic(base_size=32) + theme(legend.position="none")+
   labs(y="Coefficient", x="Predictor") + 
-  stat_pvalue_manual(t.tests, remove.bracket=T, size=20)
+  stat_pvalue_manual(t.tests, remove.bracket=T, size=10)
   
 
-ggsave(plot=pPE_wO_int,filename=paste0(fig_dir, "Figure_S9_practice.png"), 
+ggsave(plot=pPE_wO_int,filename=paste0(fig_dir, "Figure_S6_practice.png"), 
        height=30, width=30,
        units="cm", bg="white")
 
@@ -2033,20 +1697,6 @@ round(confint(mME_alt, parm=c("depression", "zTotal:depression")), 2)
 ```
 
 
-# specificity - impulsivity 
-```{r, BIS}
-mME_alt_BIS = lmerTest::lmer(DeltaEffortChosen ~ zTotal*zBIS_total +
-                           (1+zTotal|user_id),
-                           data=beh_data)
-
-summary(mME_alt_BIS)
-round(fixef(mME_alt_BIS), 2)
-round(confint(mME_alt_BIS, parm=c("zBIS_total", "zTotal:zBIS_total")), 2)
-
-# 
-
-```
-
 # Publication panel figures
 
 ## figure 1
@@ -2058,11 +1708,8 @@ self-report figures
 ```{r, self_report_figure2, fig.height=20, fig.width=20}
 library(cowplot)
 
-# align the grid A-C
-aligned_plots <- align_plots(gCor1, State_mean, State_sd, align = "hv")
-
 figure2=ggdraw() +
-  draw_plot(gCor1, x = 0, y = 0.63, width = 0.4, height = 0.33) +
+  draw_plot(gCor1, x = 0, y = 0.6, width = 0.4, height = 0.4) +
   draw_plot(State_mean, x = 0.4, y = 0.63, width = 0.3, height = 0.33) +
   draw_plot(State_sd, x = 0.7, y = 0.63, width = 0.3, height = 0.33) +
   draw_plot(pTrajectoryM_overlayCol, x = 0, y = 0.3, width = 0.6, height = 0.325) +
@@ -2072,17 +1719,16 @@ figure2=ggdraw() +
   draw_plot_label(label = c("A", "B", "C"), size = 32,
                   x = c(0, 0.4, 0.7), y = c(.97,.97,.97)) +
   draw_plot_label(label = c("D", "E", "F", "G"), size = 32,
-                  x = c(0, 0.6, 0, 0.3), y = c(0.62, 0.62,0.33, 0.33)) 
+                  x = c(0, 0.6, 0, 0.3), y = c(0.61, 0.61,0.325, 0.325)) +
+  # add subheadings
+  draw_label("State correlations", x=0.5, y=0.985, size=36, fontface="bold") +
+  draw_label("State fluctuations", x=0.5, y=0.625, size=36, fontface="bold") 
 
 
-ggsave(filename=paste0(manuscript_figs , "PNAS_resize/figure2_40x40cm.tiff"), 
-        plot=figure2,
-        height=40, width=40,
-        units="cm", bg="white", compression = "lzw")
-
-
-
-
+ggsave(filename=paste0(fig_dir, "figure2_noSubHeading.png"), 
+       plot=figure2,
+       height=40, width=40,
+       units="cm", bg="white")
 ```
 
 ## figure 3
@@ -2091,18 +1737,17 @@ task figure:
 # Arrange plots
 # Defining layout matrix
 library("cowplot")
-# align the grid B-F
-aligned_plots <- align_plots(pSuccessR_sess, pCalib, pTRChoice_icc, pTR1, pTR3, pTR2, align = "hv")
+aligned_plots <- align_plots(pChoiceFunc, pSuccessR_sess, pCalib, pTRChoice_icc, pTR1, pTR3, pTR2, align = "v")
 
-# plot the grid with A first
+
 figure3 <- ggdraw() +
-  draw_plot(pChoiceFunc, x = 0, y = 0, width = 0.46, height = 0.98) +
-  draw_plot(aligned_plots[[1]], x = 0.46, y = 0.49, width = 0.18, height = 0.49) +
-  draw_plot(aligned_plots[[2]], x = 0.46, y = 0, width = 0.18, height = 0.5) +
-  draw_plot(aligned_plots[[3]], x = 0.64, y = 0.49, width = 0.18, height = 0.49) +
-  draw_plot(aligned_plots[[4]], x = 0.64, y = 0, width = 0.18, height = 0.5) +
-  draw_plot(aligned_plots[[5]], x = 0.82, y = 0.49, width = 0.18, height = 0.49) +
-  draw_plot(aligned_plots[[6]], x = 0.82, y = 0, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[1]], x = 0, y = 0, width = 0.46, height = 0.98) +
+  draw_plot(aligned_plots[[2]], x = 0.46, y = 0.49, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[3]], x = 0.46, y = 0, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[4]], x = 0.64, y = 0.49, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[5]], x = 0.64, y = 0, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[6]], x = 0.82, y = 0.49, width = 0.18, height = 0.49) +
+  draw_plot(aligned_plots[[7]], x = 0.82, y = 0, width = 0.18, height = 0.49) +
   draw_plot_label(label = c("A"), size = 32, x = 0, y = 0.96) +
   draw_plot_label(label = c("B", "C", "D", "E", "F", "G"), size = 28, 
                   x = c(0.46, 0.46, 0.64, 0.64, 0.82, 0.82), 
@@ -2113,11 +1758,26 @@ figure3 <- ggdraw() +
 
 
 # Save the plot using grid.arrange
-ggsave(filename = paste0(manuscript_figs, "PNAS_resize/figure3_40x60.tiff"),
+ggsave(filename = paste0(fig_dir, "figure3.png"),
        plot = grid.arrange(figure3),
        height = 40, width = 60,
-       units = "cm", bg = "white", compression = "lzw")
+       units = "cm", bg = "white")
 
+
+# save smaller version for CPC poster 
+# include A: choice func 
+# B test re-test reliability 
+# for choice func use mean effortful choice var? 
+# larger test retest plot
+pTRChoice_icc2 = ggplot(filter(icc_df, behaviour=="choice"), aes(x = as.factor(behaviour), y = icc)) +
+  geom_boxplot(outlier.shape = NA, alpha = .5, width = .1) +
+  geom_jitter(width=0.3, alpha=0.4, shape=20, size=8)+
+  theme_classic(base_size=36) + theme(axis.text.x=element_blank(), axis.ticks.x = element_blank(),
+                                      legend.position="none", 
+                                      )+
+  labs(y="ICC", x="") + 
+  scale_y_continuous(breaks=c(0.5, 0.75, 1), limits=c(0.5,1), 
+                     labels=c("0.5", "0.75", "1"))
 
 ```
 
@@ -2154,7 +1814,7 @@ plt0=ggplot(data=data_behLM, aes(x=zTotal)) +
   #          label = label, size = 6) 
   # plot significance star only manually
   annotate("text", x = 0, y = 38, 
-           label = "**", size = 14)
+           label = "***", size = 14)
 
 # save each subfigure for presentations
 ggsave(filename=paste0(fig_dir, "figure4_stateMotivation_main.png"), 
@@ -2174,7 +1834,7 @@ plt1=ggplot(data=data_behLM, aes(x=apathy)) +
   scale_y_continuous(breaks=c(-20, 0, 20, 40), limits=c(-28, 40),
                      labels=c("-20", "0", "20", "40")) +
    annotate("text", x = 0.25, y = 38, 
-           label = "*", size = 14)
+           label = "**", size = 14)
 
 # save each subfigure
 ggsave(filename=paste0(fig_dir, "figure4_traitMotivation_main.png"), 
@@ -2241,7 +1901,7 @@ ggsave(filename=paste0(fig_dir, "figure4_trait_state_interaction.png"),
 
 
 
-## Fig 4c (fatigue)
+## Fig 4c 
 ```{r, figure4b, fig.height=20, fig.width=20}
 
 # add the model predicted data for fatigue as an example
@@ -2262,8 +1922,8 @@ plt0_f=ggplot(data=data_behLM, aes(x=zTired)) +
   scale_x_continuous(breaks=c(-2, -1,0,1, 2), limits=c(-2.5,2.5)) +
   scale_y_continuous(breaks=c(-20, 0, 20, 40), limits=c(-28, 40),
                      labels=c("-20", "0", "20", "40")) +
-  annotate("text", x = 0, y = 38,
-           label = "n.s.", size = 8)
+  annotate("text", x = 0, y = 40, 
+           label = "n.s.", size = 11)
 
 # save each subfigure
 ggsave(filename=paste0(fig_dir, "figure4_stateFatigue_main.png"), 
@@ -2275,7 +1935,6 @@ ggsave(filename=paste0(fig_dir, "figure4_stateFatigue_main.png"),
 
 ## modelling betas 
 
-note preloading fits is challenging across devices, so below data contains previously estimated posterior summary statistics (see /analysis/stan_fits/)
 ```{r}
 # load previously fit parameter posteriors and plot 
 stan_fit_dir = paste0(repo_path, "analysis/stan_fits/")
@@ -2299,7 +1958,7 @@ pR_theta= summary_sens %>%
   geom_abline(intercept = mean(summary_sens$mean_rewSens), 
               slope = 0.19, color = "#58508d", size = 2, alpha=0.9) +
   labs(y="Reward sensitivity (SD)", x="State motivation \U03B8 (SD)", color="Day")+
-  theme_classic(base_size=28) +
+  theme_classic(base_size=36) +
   theme(legend.position=c(0.1, 0.8),
         legend.key.size = unit(0.5, 'cm'),
         legend.key.height = unit(0.75, 'cm'),
@@ -2382,8 +2041,8 @@ pB = draws_dir %>%
   ggdist::stat_dist_slabinterval(.width = c(.1, .9), alpha = 0.5) +
   geom_vline(xintercept = 0, linetype = "dashed") +
   theme_classic(base_size = 28) +
-  labs(fill = "direction", x = "Effect on reward sensitivity",
-       y="State motivation") + 
+  labs(fill = "direction", x = "Effect on (current) reward sensitivity",
+       y="State Motivation") + 
   scale_fill_manual(values=c("#ffd4ee", "#d39bb8", "#e9b7d3")) + 
   # manual sig plots
    annotate("text", x = 0.4, y = 3.25, 
@@ -2401,7 +2060,7 @@ ggsave(filename=paste0(fig_dir, "figure4_posterior_betas.png"),
 ```
 
 
-## figure 5grid
+## figure 4grid
 split the main and interaction effects
 a. state main effect 
 b. trait main effect 
@@ -2429,20 +2088,42 @@ figure4=ggdraw() +
     scale_color_gradient(breaks=seq(0,14,7), high = "#bc5090", low = "#decad4",
                       limits = c(0,14)), x = 0, y = 0, width = .5, height = .33) +
   draw_plot(pB + theme(legend.position="none"), x = 0.5, y = 0, width = 0.5, height = .33) +
-  draw_plot_label(label = c("A", "B", "C", "D", "E", "F"), size = 26,
+  draw_plot_label(label = c("A", "B", "C", "D", "E", "F"), size = 28,
                   x = c(0, .33, .66, 0, 0, 0.5), y = c(1, 1, 1, .66, .33, .33))
   
   
-ggsave(filename=paste0(manuscript_figs, "PNAS_resize/figure4.tiff"),
+ggsave(filename = paste0(fig_dir, "figure4_v2.png"),
        plot = figure4,
-       height = 55, width = 35,
-       units = "cm", bg = "white", compression = "lzw")
-
-# save a jpeg version
-ggsave(filename=paste0(manuscript_figs, "/figure4.jpeg"),
-       plot = figure4,
-       height = 55, width = 35,
+       height = 60, width = 40,
        units = "cm", bg = "white")
+
+
+# version 3 with no figure 4c for state fatigue
+figure4=ggdraw() +
+  draw_plot(plt1, x = 0, y = .66, width = .5, height = .33) +
+  draw_plot(plt0, x = 0.5, y = .66, width = .5, height = .33) +
+  draw_plot(plt2_color, x = 0, y = 0.33, width = 1, height = .33) +
+  draw_plot(pR_theta + 
+              # change legend size
+              theme(legend.position=c(0.15, 0.9),
+        legend.key.size = unit(0.3, 'cm'),
+        legend.key.height = unit(0.5, 'cm'),
+        legend.key.width = unit(0.5, 'cm'),
+        legend.title = element_text(size = 32),
+        legend.text = element_text(size = 32)) +
+    scale_color_gradient(breaks=seq(0,14,7), high = "#bc5090", low = "#decad4",
+                      limits = c(0,14)), x = 0, y = 0, width = .5, height = .33) +
+  draw_plot(pB + theme(legend.position="none"), x = 0.5, y = 0, width = 0.5, height = .33) +
+  draw_plot_label(label = c("A", "B", "C", "D", "E"), size = 28,
+                  x = c(0, .5, 0, 0, 0.5), y = c(1, 1, .66, .33, .33))
+  
+  
+ggsave(filename = paste0(fig_dir, "figure4_v3.png"),
+       plot = figure4,
+       height = 60, width = 40,
+       units = "cm", bg = "white")
+
+
 
 ```
 
@@ -2454,9 +2135,6 @@ save_as_docx(
   path=paste0(table_dir, "supplementaryTables.docx"))
 
 ```
-
-
-
 
 
 # supplementary figures 
@@ -2782,8 +2460,7 @@ wk_summary = week_means %>% group_by(user_id, week_split) %>%
   summarise(mean_BA = mean(zBA_m, na.rm=T),
             mean_SM = mean(zSM_m, na.rm=T), 
             se_BA = sd(zBA_m, na.rm=T)/sqrt(n()),
-            se_SM = sd(zSM_m, na.rm=T)/sqrt(n()),
-            mean_choice = mean(choice_m, na.rm=T))
+            se_SM = sd(zSM_m, na.rm=T)/sqrt(n()))
 
 
 wk1 = filter(wk_summary, week_split=="Mon-Wed") %>% arrange(user_id); 

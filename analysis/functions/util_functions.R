@@ -12,7 +12,7 @@ ema_packages <- function() {
 
 plot_packages <- function() {
   library(gridExtra); library(kableExtra); library(ggplot2); library(corrplot); 
-  library(jtools); library(grid)
+  library(jtools); library(grid); library(ggpubr)
   done <- "Plotting packages loaded."
   return(done)
 }
@@ -127,6 +127,12 @@ plot_multivariate<- function(data, x="obs", vars, group){
     facet_wrap(~user_id, ncol=2) +
     ggtitle(paste0(length(vars), " EMA variables"))
   print(p)
+}
+
+# mode games 
+getmode <- function(v) {
+  uniqv <- unique(v)
+  uniqv[which.max(tabulate(match(v, uniqv)))]
 }
 
 
@@ -352,46 +358,43 @@ EMA_calc_mean <- function(data, vars, expand_op=T){
   
 }
 
+
 normalise_predictors <- function(data, predictors, between=1, drop=F){
-  # wrapper function for z-scoring a number of predictors
-  # inputs 
-  # data: df
-  # predictors: vars to z-score 
-  # between: between or within person z-score(=0)(default = between)
-  # w/p z-scores are used to see how a person at t differs from their mean
-  # b/p z-score are used to see how people differ from each other on average
-  # drop: drop the raw values from the ouput df (default = F)
+  # Wrapper function for z-scoring a number of predictors
+  # Inputs:
+  # data: dataframe
+  # predictors: variables to z-score 
+  # between: between or within person z-score (default = between=1)
+  # drop: drop the raw values from the output dataframe (default = F)
   
-  if (between == 1){
-    print(paste0('calculating between-subjects z-score for ', length(predictors), ' predictors...'))
+  if (between == 1) {
+    print(paste0('Calculating between-subjects z-score for ', length(predictors), ' predictors...'))
     
-    # loop the predictors and z-score
-    for (v in seq(predictors)){
-      data <- data %>% ungroup() %>% mutate(
-        !!paste0("z", predictors[v]) := (get(predictors[v]) - mean(get(predictors[v]), na.rm = T)) / sd(get(predictors[v]), na.rm = T)
-      )
+    # Loop through predictors and calculate the z-score
+    for (v in predictors) {
+      z_column_name <- paste0("z", v)
+      data[[z_column_name]] <- (data[[v]] - mean(data[[v]], na.rm = TRUE)) / sd(data[[v]], na.rm = TRUE)
     }
   } else {
-    print(paste0('calculating within-subjects z-score for ', length(predictors), ' predictors...'))
+    print(paste0('Calculating within-subjects z-score for ', length(predictors), ' predictors...'))
     
-    # within person z-score using group_by subject
-    for (v in seq(predictors)){
-      data <- data %>% ungroup()%>% group_by(user_id) %>% mutate(
-        !!paste0("z", predictors[v]) := (get(predictors[v]) - mean(get(predictors[v]), na.rm = T)) / sd(get(predictors[v]), na.rm = T),
-        # also add the lagged predictor
-        !!paste0("zL", predictors[v]) := dplyr::lag(get(paste0("z", predictors[v])))
-      ) %>% ungroup()
+    # Loop through predictors and calculate within-subjects z-scores
+    for (v in predictors) {
+      z_column_name <- paste0("z", v)
+      lagged_column_name <- paste0("zL", v)
+      
+      data[[z_column_name]] <- ave(data[[v]], data$user_id, FUN = function(x) (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE))
+      data[[lagged_column_name]] <- ave(data[[v]], data$user_id, FUN = function(x) c(NA, head(x, -1))) # Adding lagged value
     }
   }
   
-  if (drop==T){
-    # if desired, drop the raw variables from the output df
-    print('dropped raw variables')
-    data = data %>% select(-all_of(predictors))
+  if (drop == TRUE) {
+    # Drop raw variables if requested
+    print('Dropping raw variables...')
+    data <- data[ , !(names(data) %in% predictors)]
   }
   
   return(data)
-  
 }
 
 # visualise raw ema distributions
@@ -646,3 +649,232 @@ extract_first_element <- function(x) {
   return(x)
 }
 
+# plot manual significance with ggplot if you can't use geom_Signif or something else
+geomPlotManualSig <- function(x, xend, y, yend=NULL, label, size = 1, color = "black", text_size = 6, text_color = "black") {
+  # Automatically calculate yBracketOffset as a function of size (e.g., 20% of the size)
+  if (is.null(yend)){
+      yend <- size * 0.025  # You can adjust this factor for more or less offset
+  # Adjust label's vertical position slightly above the bracket
+  }
+  # Calculate the midpoint for the label placement
+  label_x <- (x + xend) / 2
+  label_y <- y + y*0.01  
+  
+  # Return the necessary ggplot layers for the bracket and label with optional size and color
+  list(
+    geom_segment(aes(x = x, xend = xend, y = y, yend = y), color = color, size = size),  # Horizontal line
+    geom_segment(aes(x = x, xend = x, y = y - yend, yend = y), color = color, size = size),  # Left vertical line
+    geom_segment(aes(x = xend, xend = xend, y = y - yend, yend = y), color = color, size = size),  # Right vertical line
+    geom_text(aes(x = label_x, y = label_y, label = label), color = text_color, size = text_size)  # Text label for significance
+  )
+}
+
+# convert p values to significance asterics e.g., from a dataframe or vector 
+convertPvalue <- function(input_data, column_name = "p.value", alphas=c(0.001, 0.01, 0.05)) {
+  # Create a function to apply asterisks to p-values
+  convert <- function(p) {
+    if (p < alphas[1]) {
+      return("***")
+    } else if (p <= alphas[2]) {
+      return("**")
+    } else if (p <= alphas[3]) {
+      return("*")
+    } else {
+      return("n.s.")
+    }
+  }
+  
+  # Check if input is a dataframe
+  if (is.data.frame(input_data)) {
+    # If input is a dataframe, assume the p-values are in the specified column
+    if (!(column_name %in% colnames(input_data))) {
+      stop("Column name not found in the dataframe")
+    }
+    input_data$sig <- sapply(input_data[[column_name]], convert)  # Apply conversion
+    return(input_data)  # Return the modified dataframe with the new sig column
+  }
+  
+  # If input is a vector, apply the conversion function and return the new vector
+  if (is.vector(input_data)) {
+    return(sapply(input_data, convert))  # Return the new sig vector
+  }
+  
+  # If input is not a dataframe or vector, return an error
+  stop("Input must be either a vector or a dataframe.")
+}
+
+# Function to parse contrasts and assign x and xend positions
+parse_contrasts <- function(contrast_str) {
+  # Print the contrast string to debug
+  print(paste("Processing contrast:", contrast_str))
+  
+  # Extract deltaRewardB and mean_state using regular expressions
+  deltaRewardB1 <- as.numeric(sub(".*deltaRewardB(\\d).*", "\\1", contrast_str))  # Extract deltaRewardB1, deltaRewardB2, etc.
+  mean_state1 <- as.numeric(sub(".*mean_state([+-]?\\d*\\.?\\d+).*", "\\1", contrast_str))  # Extract mean_state (-1.5 or 1.5)
+  
+  # Check if extraction worked properly
+  print(paste("deltaRewardB1:", deltaRewardB1, "mean_state1:", mean_state1))
+  
+  # Handle any failed extraction (NA values)
+  if (is.na(deltaRewardB1) || is.na(mean_state1)) {
+    return(c(x = NA, xend = NA))  # Return NA if extraction failed
+  }
+  
+  # Define offsets based on mean_state values
+  offset <- ifelse(mean_state1 == -1.5, -0.1, ifelse(mean_state1 == 1.5, 0.1, 0))
+  
+  # Calculate x and xend based on deltaRewardB1 and mean_state
+  x <- deltaRewardB1 + offset  # Left side (x)
+  
+  # Extract the second deltaRewardB value (deltaRewardB2, deltaRewardB3, etc.) and compute xend similarly
+  deltaRewardB2 <- as.numeric(sub(".*deltaRewardB(\\d).*", "\\1", sub(".*- deltaRewardB(\\d)", "\\1", contrast_str)))
+  
+  # Handle any failed extraction (NA values)
+  if (is.na(deltaRewardB2)) {
+    return(c(x = NA, xend = NA))  # Return NA if extraction failed
+  }
+  
+  xend <- deltaRewardB2 + offset  # Right side (xend)
+  
+  return(c(x = x, xend = xend))  # Return x and xend positions
+}
+
+
+## SPM results table to word table w/ anatomical labels 
+spmRes_table_gen <- function(file, custom_caption) {
+  # Load necessary libraries
+  library(dplyr)
+  library(flextable)
+  
+  # Read the CSV file
+  raw_tt <- read.csv(file)
+  
+  col_vars <- c("cluster", "cluster.2", "peak", "peak.2", "X", "X.1", "X.2")
+  
+  # Process the data
+  tt <- raw_tt %>%
+    select(all_of(col_vars)) %>%
+    # Filter secondary clusters
+    filter(cluster.2 != "equivk") %>%
+    mutate(
+      Region = "",
+      Side = ifelse(X < 0, "L", "R"),
+      peak.2 = as.numeric(peak.2), 
+      cluster.2=as.numeric(cluster.2)
+    ) %>%
+    mutate_if(is.numeric, round, 2)  # Round numeric columns
+  
+  # Reorder and rename columns
+  tt <- tt[, c("Region", "Side", "cluster.2", "peak.2", "X", "X.1", "X.2")]
+  colnames(tt) <- c("Region", "Side", "Extent (voxels)", "T", "x", "y", "z")
+  
+  # Map MNI coordinates to region names
+  Result <- as.data.frame(t(mapply(
+    FUN = mni_to_region_name, template = "aal",
+    x = as.numeric(tt$x), y = as.numeric(tt$y), z = as.numeric(tt$z)
+  )))
+  
+  tt$Region <- gsub("_", " ", gsub("_([LR])$", "", Result$aal.label))
+  
+  tt = group_by(tt, Region, Side) %>%
+    filter(row_number() == 1) %>%
+    ungroup()
+  
+  # redefine bilaterality for bilateral clusters
+  tt = tt %>% 
+    group_by(Region) %>% 
+    mutate(Hemisphere = ifelse(n_distinct(Side) == 2, 
+                               ifelse(row_number() == 1, "bilateral", ""), 
+                               ifelse(Side == "L", "L", "R")))
+  
+  
+  # Reorder the data frame by Region and Hemisphere
+  tt <- tt %>%
+    arrange(Region, "T", Side) %>%
+    select(Region, Hemisphere, Side, "Extent (voxels)", "T", x,y,z)
+
+  tt <- tt %>%
+    group_by(Region) %>% 
+    mutate(Hemisphere = if (n_distinct(Side) == 2) {
+      # For bilateral regions, add the side in parentheses
+      paste0("bilateral (", Side, ")")
+    } else {
+      # For non-bilateral regions, leave Hemisphere as is (e.g., "L" or "R")
+      Hemisphere
+    }) %>%
+    ungroup() %>% # finally drop side
+    select(-Side)
+  
+  
+  # Create the flextable
+  tbl_out <- flextable(tt) %>%
+    set_table_properties(layout = "autofit") %>%
+    set_caption(
+      caption = as_paragraph(custom_caption),
+      style = "Table Caption"
+    )
+  
+  # Return the flextable object
+  return(tbl_out)
+}
+
+# mediation path wrapper
+plot_mediation=function(labs, coeffs, plotOptions){
+  # create df
+  med_data <-
+    data.frame(
+      lab_x   = labs$x,
+      lab_m   = labs$m,
+      lab_y   = labs$y,
+      coef_xm = coeffs$xm,
+      coef_my = coeffs$my,
+      coef_xy = coeffs$xy
+    )
+  
+  med_diagram <- function(data, height = .75, width = 2, graph_label = NA, node_text_size = 20, edge_text_size = 18, color = "black", ranksep = .2, minlen = 3){
+    
+    require(glue)
+    require(DiagrammeR)
+    
+    data$height  <- height   # node height
+    data$width   <- width    # node width
+    data$color   <- color    # node + edge border color
+    data$ranksep <- ranksep  # separation btwn mediator row and x->y row
+    data$minlen  <- minlen   # minimum edge length
+    
+    data$node_text_size  <- node_text_size
+    data$edge_text_size  <- edge_text_size
+    
+    data$graph_label <- ifelse(is.na(graph_label), "", paste0("label = '", graph_label, "'"))
+    
+    diagram_out <- glue::glue_data(data,
+                                   "digraph flowchart {
+      fontname = Helvetica
+      <<graph_label>>
+      graph [ranksep = <<ranksep>>]
+
+      # node definitions with substituted label text
+      node [fontname = Helvetica, shape = rectangle, fixedsize = TRUE, width = <<width>>, height = <<height>>, fontsize = <<node_text_size>>, color = <<color>>]        
+        mm [label = '<<lab_m>>']
+        xx [label = '<<lab_x>>']
+        yy [label = '<<lab_y>>']
+
+      # edge definitions with the node IDs
+      edge [minlen = <<minlen>>, fontname = Helvetica, fontsize = <<edge_text_size>>, color = <<color>>]
+        mm -> yy [label = '<<coef_my>>'];
+        xx -> mm [label = '<<coef_xm>>'];
+        xx -> yy [label = '<<coef_xy>>'];
+      
+      { rank = same; mm }
+      { rank = same; xx; yy }
+      
+      }
+
+      ", .open = "<<", .close = ">>")  
+    
+    
+    DiagrammeR::grViz(diagram_out)  
+  }
+  
+  med_diagram(med_data)
+}
