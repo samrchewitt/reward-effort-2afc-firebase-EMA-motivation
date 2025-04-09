@@ -17,62 +17,10 @@ const questionsFile = "questions.json" // json file storing the ema questions
 var nTrials = 24; // (24=will shuffle trials from 0-23)
 var catchIdx = 13; // specify the catch trial manually 
 // End behaviour: 
-var complete_link = "https://app.prolific.co/submissions/complete?cc=8B6EC8FC";  // link offered by brain explorer
+var complete_link = "";  // link offered by brain explorer at the end (redirect the user to this webpage)
 var buttonText = "Go back"; // text to display on the final button
 
 // remainder of settings are automatic (except Practice parameters below)
-// Define the different orders
-export const ORDER_A1 = [
-    'questInstructionsScene',
-    'Questions',
-    'InstructionsScene',
-    'practiceTask',
-    'StartTaskScene',
-    'MainTask',
-    'TaskEndScene'
-];
-
-export const ORDER_B1 = [
-    'InstructionsScene',
-    'practiceTask',
-    'StartTaskScene',
-    'MainTask',
-    'questInstructionsScene',
-    'Questions',
-    'TaskEndScene'
-];
-
-export const ORDER_A2 = [
-    'questInstructionsScene',
-    'Questions',
-    'StartTaskScene',
-    'MainTask',
-    'TaskEndScene'
-];
-
-export const ORDER_B2 = [
-    'StartTaskScene',
-    'MainTask',
-    'questInstructionsScene',
-    'Questions',
-    'TaskEndScene'
-];
-
-// Define the test order
-export const TEST_ORDER = [
-    'StartTaskScene',
-    'MainTask',
-    'TaskEndScene'
-];
-
-// Export all orders as a single object
-export const ORDER = {
-    A1: ORDER_A1,
-    B1: ORDER_B1,
-    A2: ORDER_A2,
-    B2: ORDER_B2,
-    TEST: TEST_ORDER
-};
 
 
 // effort calibration description:
@@ -146,7 +94,7 @@ if (test_game == false && demo_mode == false) {
 
 
 export {demo_mode,
-	debug_mode, sceneOrder, briefStudyDescr, ORDER,
+	debug_mode, briefStudyDescr,
 	completionMin, completionBonus80, completionBonus100, taskName, version, gameType, approxTime, bonusRate, maxBonus,
 	blockDesktop, trialsFile, questionsFile, nTrials, catchIdx, maxCoins, thresholdAutoSet,
 	effortTime, gemHeights, pracTrialRewards, pracTrialEfforts, minPressMax, nCalibrates, nBlocks, complete_link, buttonText};
